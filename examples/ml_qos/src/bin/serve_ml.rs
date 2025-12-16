@@ -7,7 +7,7 @@ use iris_core::config::load_config;
 use iris_core::rte_rdtsc;
 use iris_core::subscription::StreamingCallback;
 use iris_datatypes::StartTime;
-use iris_filtergen::*;
+use iris_compiler::*;
 use ml_qos::features::FeatureChunk;
 use std::time::Instant;
 

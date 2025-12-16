@@ -7,7 +7,7 @@ use super::StaticData;
 use iris_core::conntrack::conn_id::FiveTuple;
 use iris_core::conntrack::pdu::L4Pdu;
 #[allow(unused_imports)]
-use iris_filtergen::datatype;
+use iris_compiler::datatype;
 use pnet::datalink::MacAddr;
 
 /// Subscribable alias for [`iris_core::FiveTuple`]

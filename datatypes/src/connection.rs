@@ -8,7 +8,7 @@ use iris_core::protocols::packet::tcp::{ACK, FIN, RST, SYN};
 use iris_core::subscription::Tracked;
 use iris_core::StateTxData;
 #[allow(unused_imports)]
-use iris_filtergen::{datatype, datatype_group};
+use iris_compiler::{datatype, datatype_group};
 
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;

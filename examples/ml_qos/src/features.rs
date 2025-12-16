@@ -1,7 +1,7 @@
 use iris_core::subscription::Tracked;
 use iris_core::{L4Pdu, StateTxData, protocols::stream::SessionProto};
 #[allow(unused_imports)]
-use iris_filtergen::{cache_file, datatype, datatype_group};
+use iris_compiler::{cache_file, datatype, datatype_group};
 use std::time::Instant;
 use welford::Welford;
 

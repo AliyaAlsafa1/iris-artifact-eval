@@ -6,7 +6,7 @@ use iris_core::protocols::{Session, stream::SessionData};
 use iris_core::subscription::FilterResult;
 use iris_core::{Runtime, config::load_config};
 use iris_datatypes::HttpTransaction;
-use iris_filtergen::{callback, datatype, datatype_group, filter, input_files, iris_main};
+use iris_compiler::{callback, datatype, datatype_group, filter, input_files, iris_main};
 
 #[derive(Parser, Debug)]
 struct Args {

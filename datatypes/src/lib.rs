@@ -15,7 +15,7 @@
 
 use iris_core::{protocols::Session, L4Pdu, Mbuf};
 #[allow(unused_imports)]
-use iris_filtergen::cache_file;
+use iris_compiler::cache_file;
 
 pub mod conn_fts;
 pub use conn_fts::*;

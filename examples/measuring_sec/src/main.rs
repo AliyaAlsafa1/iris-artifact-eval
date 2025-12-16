@@ -1,7 +1,7 @@
 use iris_core::FiveTuple;
 use iris_core::Runtime;
 use iris_core::config::load_config;
-use iris_filtergen::*;
+use iris_compiler::*;
 
 use std::path::PathBuf;
 

@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use iris_core::{Runtime, config::load_config};
-use iris_filtergen::*;
+use iris_compiler::*;
 
 use ack_timer::OpenVPNAcks;
 use opcodes::OpenVPNOpcode;

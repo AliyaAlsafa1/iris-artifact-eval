@@ -2,7 +2,7 @@ use indexmap::IndexSet;
 use iris_core::CoreId;
 use iris_core::FiveTuple;
 use iris_datatypes::*;
-use iris_filtergen::*;
+use iris_compiler::*;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::IpAddr;

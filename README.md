@@ -1,2 +1,0 @@
-# Artifact Evaluation for Iris
-

@@ -2,7 +2,7 @@ use clap::Parser;
 use iris_core::rte_rdtsc;
 use iris_core::{config::load_config, Runtime};
 use iris_datatypes::ConnRecord;
-use iris_filtergen::*;
+use iris_compiler::*;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;

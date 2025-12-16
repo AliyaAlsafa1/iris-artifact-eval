@@ -25,7 +25,7 @@
 use iris_core::subscription::Tracked;
 use iris_core::{protocols::packet::tcp::TCP_PROTOCOL, L4Pdu, Mbuf};
 #[allow(unused_imports)]
-use iris_filtergen::{datatype, datatype_group};
+use iris_compiler::{datatype, datatype_group};
 
 /// Pasic raw packet bytes.
 #[derive(Debug)]

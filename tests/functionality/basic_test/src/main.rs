@@ -2,7 +2,7 @@ use clap::Parser;
 use iris_core::subscription::Tracked;
 use iris_core::{config::load_config, FiveTuple, Runtime};
 use iris_datatypes::{conn_fts::ByteCount, FromSession, StaticData, TlsHandshake};
-use iris_filtergen::{callback, input_files, iris_main};
+use iris_compiler::{callback, input_files, iris_main};
 use lazy_static::lazy_static;
 use std::io::Write;
 use std::path::PathBuf;

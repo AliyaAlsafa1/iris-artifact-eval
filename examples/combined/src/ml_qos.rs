@@ -2,7 +2,7 @@ use iris_core::L4Pdu;
 use iris_core::StateTxData;
 use iris_core::subscription::{StreamingCallback, Tracked};
 use iris_datatypes::StartTime;
-use iris_filtergen::*;
+use iris_compiler::*;
 use std::time::Instant;
 
 use super::Args;
@@ -101,7 +101,7 @@ lazy_static::lazy_static! {
 
 use iris_core::protocols::stream::SessionProto;
 #[allow(unused_imports)]
-use iris_filtergen::{cache_file, datatype, datatype_group};
+use iris_compiler::{cache_file, datatype, datatype_group};
 use welford::Welford;
 
 const NSEGS: usize = 10; // Segments before clearing "last 10" stats

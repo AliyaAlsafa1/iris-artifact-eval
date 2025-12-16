@@ -5,7 +5,7 @@ use crate::FromSession;
 use iris_core::protocols::stream::tls::Tls;
 use iris_core::protocols::stream::{Session, SessionData};
 #[allow(unused_imports)]
-use iris_filtergen::{datatype, datatype_group};
+use iris_compiler::{datatype, datatype_group};
 
 #[cfg_attr(not(feature = "skip_expand"), datatype("L7EndHdrs,parsers=tls"))]
 pub type TlsHandshake = Box<Tls>;

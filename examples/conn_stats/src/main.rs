@@ -2,7 +2,7 @@ use clap::Parser;
 use iris_core::FiveTuple;
 use iris_core::{Runtime, config::load_config};
 use iris_datatypes::{ByteCount, ConnDuration, PktCount};
-use iris_filtergen::*;
+use iris_compiler::*;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 
