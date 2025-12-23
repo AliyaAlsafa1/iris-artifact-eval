@@ -20,4 +20,4 @@ iris-compiler = { path = "../compiler" }
 # cache results in the output file
 # turn off if anything in the crate changes
 skip_expand = []
-default = ["skip_expand"]
+default = []
