@@ -1,18 +1,3 @@
-//!
-//! Subscribable data types.
-//!
-//! A subscription is a request for a callback on a subset of network traffic specified by a filter.
-//! Each callback function requires one or more *subscribable data types* as parameter(s), which it
-//! immutably borrows.
-//!
-//! Each subscribable datatype must:
-//!
-//! - Be defined as a [DataType](iris_core::filter::DataType), with appropriate parameters and [iris_core::filter::Level].
-//! - Implement one of the traits defined in this module (Tracked, FromSession, etc.)
-//! - Be added to the [DATATYPES](`crate::typedefs::DATATYPES`) map (note: we are actively working on an approach that eliminates this requirement).
-//!
-//!
-
 use iris_core::{protocols::Session, L4Pdu, Mbuf};
 #[allow(unused_imports)]
 use iris_compiler::cache_file;

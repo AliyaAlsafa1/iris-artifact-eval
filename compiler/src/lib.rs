@@ -1,6 +1,6 @@
 #![allow(clippy::needless_doctest_main)]
 //! Macros for defining subscriptions in Iris.
-//!
+//! See main README. Detailed documentation to be added.
 
 use proc_macro::TokenStream;
 use quote::quote;

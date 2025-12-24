@@ -212,3 +212,39 @@ sudo env LD_LIBRARY_PATH=$LD_LIBRARY_PATH RUST_LOG=error ./target/release/measur
 
 This will read the packet capture specified in [offline.toml](./configs/offline.toml), currently the [small_flows](./traces/small_flows.pcap) pcap.
 It will produce files with a report of application-layer and high-level connection data seen in the packet capture.
+
+### Writing an Application
+
+Iris is a development framework, and the [examples](./examples/) directory includes multiple example Iris applications.
+We encourage reviewers to play around with these examples!
+You can add (compatible) data types to any custom filters or callbacks and define new callbacks, filters, and data types.
+
+If compilation fails, look for an error message printed by the [compiler](./compiler/) crate. An error typically means that a subscription is unresolvable (e.g., a packet-level data type requested in a connection-level callback).
+
+### Technicalities
+
+Set the $IRIS_HOME environment variable, e.g.:
+
+```
+export IRIS_HOME=~/iris-artifact-eval
+```
+
+Any crate that defines data types specifies an `output_file` where intermediate values are written. For example, the [datatypes](./datatypes/) crate has the following line:
+
+```rust
+#[cache_file("$IRIS_HOME/datatypes/data.txt")]
+```
+
+Other applications using the data types generated in this crate must tell the compiler where to find this specification.
+
+For instance, many of the [examples](./examples/) have the line:
+
+```rust
+#[input_files("$IRIS_HOME/datatypes/data.txt")]
+```
+
+Finally, you must tag the `main` function with:
+
+```rust
+#[iris_main]
+```

@@ -1,3 +1,3 @@
-# Basic
+# Benchmark
 
-An introductory example that logs TLS and DNS transactions, each with associated connection metrics.
+An introductory example that uses an input file to specify multiple subscriptions.

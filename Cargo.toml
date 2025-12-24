@@ -5,11 +5,11 @@ members = [
     "examples/basic",
     "examples/enc_conns",
     "examples/benchmark",
-    "examples/re_matcher",
     "tests/functionality/basic_test",
     "examples/measuring_sec",
     "examples/ml_qos",
-    "examples/open_vpn", "examples/malicious_sites", "examples/combined", "examples/conn_stats",
+    "examples/open_vpn",
+    "examples/combined",
 ]
 resolver = "2"
 
