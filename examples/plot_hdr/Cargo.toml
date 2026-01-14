@@ -1,0 +1,8 @@
+[package]
+name = "plot_hdr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hdrhistogram = "7"
+plotters = "0.3"

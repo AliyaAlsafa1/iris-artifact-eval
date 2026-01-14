@@ -10,6 +10,8 @@ members = [
     "examples/ml_qos",
     "examples/open_vpn",
     "examples/combined",
+    "examples/flow_features",
+    "examples/plot_hdr",
 ]
 resolver = "2"
 
