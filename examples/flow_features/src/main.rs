@@ -3,17 +3,23 @@ use iris_compiler::*;
 use iris_core::{config::load_config, L4Pdu, Runtime};
 use std::path::PathBuf;
 use std::time::Instant;
-use hdrhistogram::{Histogram, serialization::{V2Serializer, Serializer}};
+use hdrhistogram::Histogram;
 use once_cell::sync::Lazy;
 use std::{fs::File, sync::Mutex};
+use std::io::BufWriter;
+use std::io::Write;
 
 // GLOBALS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
-    Lazy::new(|| Mutex::new(Histogram::new_with_bounds(1, 600_000_000, 3).unwrap())); // up to 10min
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_BYTES: Lazy<Mutex<Histogram<u64>>> =
-    Lazy::new(|| Mutex::new(Histogram::new_with_bounds(1, 10_000_000_000, 3).unwrap())); // up to 10GB
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_THROUGHPUT: Lazy<Mutex<Histogram<u64>>> =
-    Lazy::new(|| Mutex::new(Histogram::new_with_bounds(1, 1_000_000_000_000, 3).unwrap())); // up to 1Tbps
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_PACKETS: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_DIR_DOMINANCE: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(1).unwrap()));
 
 // Command Args
 #[derive(Parser, Debug)]
@@ -45,29 +51,47 @@ pub struct ConnVolume {
     start_ts: Instant,   // start time of connection
     end_ts: Instant,     // end time of connection
     packet_count: u64,   // total packets
-    byte_count: u64,     // total bytes (currently payload bytes via length()?)
+    byte_count: u64,     // total bytes
+
+    fwd_bytes: u64,
+    rev_bytes: u64,
 }
 
 impl ConnVolume {
     /* PDU is a required argument. */
     pub fn new(pdu: &L4Pdu) -> Self {
         let ts = pdu.ts;                 // timestamp
-        let bytes = pdu.mbuf.data_len(); // length of mbuf (bytes on the wire)
+        let bytes = pdu.mbuf.data_len() as u64; // length of mbuf (bytes on the wire)
+
+        let (fwd, rev) = if pdu.dir {
+            (bytes, 0)
+        } else {
+            (0, bytes)
+        };
 
         ConnVolume {
             start_ts: ts,
             end_ts: ts,
             packet_count: 1,
-            byte_count: bytes as u64,
+            byte_count: bytes as u64, // might need to cast
+            fwd_bytes: fwd,
+            rev_bytes: rev,
         }
     }
 
     /* `level=L4InPayload` indicates that this should be invoked on every new packet */
     #[datatype_group("ConnVolume,level=L4InPayload")]
     pub fn new_packet(&mut self, pdu: &L4Pdu) {
+        let bytes = pdu.mbuf.data_len() as u64; // might need to cast
         self.packet_count += 1;
-        self.byte_count += pdu.mbuf.data_len() as u64;
+        self.byte_count += bytes;
         self.end_ts = pdu.ts;
+
+        if pdu.dir {
+        self.fwd_bytes += bytes;
+        } else {
+            self.rev_bytes += bytes;
+        }
     }
 }
 
@@ -78,24 +102,51 @@ impl ConnVolume {
  */
 #[callback("tcp or udp,level=L4Terminated")]
 pub fn record_data(conn: &ConnVolume) {
-    let duration = (conn.end_ts - conn.start_ts).as_millis() as u64;
-    let duration = duration.max(1);
+    // Ignore single-packet flows
+    if conn.packet_count <= 1 {
+        return;
+    }
 
-    let bytes = (conn.byte_count as u64).max(1);
+    let duration_secs = (conn.end_ts - conn.start_ts).as_secs().max(1);
+    let bytes = conn.byte_count.max(1);
+    let packets = conn.packet_count;
 
-    // bps = bytes * 8 / seconds = bytes*8*1000/ milliseconds
-    let bps = bytes.saturating_mul(8).saturating_mul(1_000) / duration;
-    let bps = bps.max(1);
+    // Only record duration if >= 10s
+    if duration_secs >= 10 {
+        H_DURATION.lock().unwrap().record(duration_secs).unwrap();
+    }
 
-    H_DURATION.lock().unwrap().record(duration).unwrap();
     H_BYTES.lock().unwrap().record(bytes).unwrap();
-    H_THROUGHPUT.lock().unwrap().record(bps).unwrap();
+    H_PACKETS.lock().unwrap().record(packets).unwrap();
+
+    // Directionality
+    let dir = if conn.fwd_bytes >= conn.rev_bytes {
+        1  // dominantly forward
+    } else {
+        0  // dominantly reverse
+    };
+
+    H_DIR_DOMINANCE.lock().unwrap().record(dir).unwrap();
+
+
+    // Throughput only for long-lived flows (≥10s)
+    if duration_secs >= 10 {
+        let bps = bytes.saturating_mul(8) / duration_secs;
+        H_THROUGHPUT.lock().unwrap().record(bps.max(1)).unwrap();
+    }
 }
 
 /* Dump histogram to file */
-fn dump_hist(path: PathBuf, h: &Histogram<u64>) {
-    let mut f = File::create(path).unwrap();
-    V2Serializer::new().serialize(h, &mut f).unwrap();
+fn dump_hist(path: PathBuf, h: &Histogram<u64>) -> std::io::Result<()> {
+    let f = File::create(path)?;
+    let mut w = BufWriter::new(f);
+    writeln!(w, "value,count")?;
+
+    for v in h.iter_recorded() {
+        writeln!(w, "{},{}", v.value_iterated_to(), v.count_at_value())?;
+    }
+
+    Ok(())
 }
 
 /*
@@ -116,16 +167,28 @@ fn main() {
     runtime.run();
 
     // Dump histograms on graceful shutdown
-    let dur_path = out_dir.join("duration_us.hdr");
-    let vol_path = out_dir.join("volume_bytes.hdr");
-    let thr_path = out_dir.join("throughput_bps.hdr");
+    let dur_path = out_dir.join("duration_secs.csv");
+    let vol_path = out_dir.join("volume_bytes.csv");
+    let thr_path = out_dir.join("throughput_bps.csv");
+    let pkt_path = out_dir.join("packet_count.csv");
+    let dir_path = out_dir.join("directionality_dominance.csv");
 
-    dump_hist(dur_path.clone(), &H_DURATION.lock().unwrap());
-    dump_hist(vol_path.clone(), &H_BYTES.lock().unwrap());
-    dump_hist(thr_path.clone(), &H_THROUGHPUT.lock().unwrap());
+    dump_hist(dur_path.clone(), &H_DURATION.lock().unwrap())
+        .expect("Failed to write duration histogram");
+    dump_hist(vol_path.clone(), &H_BYTES.lock().unwrap())
+        .expect("Failed to write volume histogram");
+    dump_hist(thr_path.clone(), &H_THROUGHPUT.lock().unwrap())
+        .expect("Failed to write throughput histogram");
+    dump_hist(pkt_path.clone(), &H_PACKETS.lock().unwrap())
+        .expect("Failed to write packet count histogram");
+    dump_hist(dir_path.clone(), &H_DIR_DOMINANCE.lock().unwrap())
+        .expect("Failed to write directionality histogram");
+
 
     println!("Histograms written to:");
     println!("  {}", dur_path.display());
     println!("  {}", vol_path.display());
     println!("  {}", thr_path.display());
+    println!("  {}", pkt_path.display());
+    println!("  {}", dir_path.display());
 }
