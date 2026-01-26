@@ -131,4 +131,20 @@ if __name__ == "__main__":
         out / "directionality.png"
     )
 
+    # ---------- Throughput ----------
+    throughput = load_hist(base / "throughput_bps.csv")
+    throughput_buckets = [
+        (0, 1_000, "0–1kB/s"),
+        (1_000, 10_000, "1k–10kB/s"),
+        (10_000, 100_000, "10k–100kB/s"),
+        (100_000, 500_000, "100k–500kB/s"),
+        (500_000, None, "500kB/s+"),
+    ]
+    plot_bars(
+        bucketize(throughput, throughput_buckets),
+        "Flow Throughput",
+        "Throughput (bytes/sec)",
+        out / "throughput.png"
+    )
+
     print("All plots written to ./plots/")
