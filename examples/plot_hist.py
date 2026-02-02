@@ -116,35 +116,27 @@ if __name__ == "__main__":
     # ratio > 1 means asymmetric; direction was lost
     # ASSUMPTION: you also have fwd_bytes & rev_bytes counts
     # If ratio==1 → symmetric, ignore
-    dir_data = load_hist(base / "directionality_ratio.csv")
 
-    forward = sum(c for v, c in dir_data if v > 1)
-    reverse = sum(c for v, c in dir_data if v < 1)
-
-    plot_bars(
-        {
-            "Forward-dominant": forward,
-            "Reverse-dominant": reverse,
-        },
-        "Flow Directionality",
-        "Dominant direction",
-        out / "directionality.png"
-    )
 
     # ---------- Throughput ----------
     throughput = load_hist(base / "throughput_bps.csv")
+
     throughput_buckets = [
-        (0, 1_000, "0–1kB/s"),
-        (1_000, 10_000, "1k–10kB/s"),
-        (10_000, 100_000, "10k–100kB/s"),
-        (100_000, 500_000, "100k–500kB/s"),
-        (500_000, None, "500kB/s+"),
+        (0, 1_000, "0–1 kbps"),
+        (1_000, 10_000, "1–10 kbps"),
+        (10_000, 100_000, "10–100 kbps"),
+        (100_000, 1_000_000, "100 kbps–1 Mbps"),
+        (1_000_000, 10_000_000, "1–10 Mbps"),
+        (10_000_000, None, "10+ Mbps"),
     ]
+
     plot_bars(
         bucketize(throughput, throughput_buckets),
         "Flow Throughput",
-        "Throughput (bytes/sec)",
+        "Throughput (bits/sec)",
         out / "throughput.png"
     )
+
+
 
     print("All plots written to ./plots/")
