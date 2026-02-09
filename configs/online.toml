@@ -41,3 +41,4 @@ port = 9898
 throughput = true
 mempool_usage = true
 port_stats = [ "rx_good_packets", "rx_good_bytes", "rx_phy_packets", "rx_phy_bytes", "rx_mbuf_allocation_errors", "rx_phy_discard_packets", "rx_missed_errors",]
+

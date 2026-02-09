@@ -8,6 +8,11 @@ use once_cell::sync::Lazy;
 use std::{fs::File, sync::Mutex};
 use std::io::{BufWriter, Write};
 use std::collections::HashMap;
+use iris_core::protocols::stream::SessionProto;
+
+// GLOBAL CONSTANTS
+const LARGE_FLOW_MIN_DURATION_SECS: u64 = 120;
+const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000; // 10_000_000 10 Mbps (tune as needed)
 
 // GLOBAL HISTOGRAMS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
@@ -23,6 +28,12 @@ static H_DIR_DOMINANCE: Lazy<Mutex<Histogram<u64>>> =
 static H_PROTOCOL: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_DST_PORT: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_LARGE_FLOW_L7: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_DIR_RATIO_PERCENT: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_LARGE_PROTO_PORT_CLASS: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 
 // HEATMAP COUNTER
@@ -71,7 +82,7 @@ fn throughput_bucket_bps(bps: u64) -> u64 {
 
 // CONNECTION STATE
 #[derive(Debug, Clone)]
-#[datatype("level=L4Terminated")]
+#[datatype("level=L4Terminated,parsers=http&tls&quic")]
 pub struct ConnVolume {
     start_ts: Instant,
     end_ts: Instant,
@@ -80,7 +91,10 @@ pub struct ConnVolume {
     fwd_bytes: u64,
     rev_bytes: u64,
     proto: usize,
+    src_port: u16,
     dst_port: u16,
+
+    l7_proto: Option<SessionProto>,
 }
 
 impl ConnVolume {
@@ -98,7 +112,10 @@ impl ConnVolume {
             fwd_bytes: fwd,
             rev_bytes: rev,
             proto: pdu.ctxt.proto,
+            src_port: pdu.ctxt.src.port(),
             dst_port: pdu.ctxt.dst.port(),
+
+            l7_proto: None,
         }
     }
 
@@ -113,6 +130,13 @@ impl ConnVolume {
             self.fwd_bytes += bytes;
         } else {
             self.rev_bytes += bytes;
+        }
+    }
+
+    #[datatype_group("ConnVolume,level=L7OnDisc")]
+    pub fn proto_id(&mut self, proto: &SessionProto) {
+        if self.l7_proto.is_none() {
+            self.l7_proto = Some(proto.clone());
         }
     }
 }
@@ -134,13 +158,27 @@ pub fn record_data(conn: &ConnVolume) {
     let dir = if conn.fwd_bytes >= conn.rev_bytes { 1 } else { 0 };
     H_DIR_DOMINANCE.lock().unwrap().record(dir).unwrap();
 
+    // Direction ratio analysis
+    let total_bytes = conn.fwd_bytes + conn.rev_bytes;
+
+    if total_bytes > 0 {
+        let forward_ratio_percent =
+            (conn.fwd_bytes * 100) / total_bytes;
+
+        H_DIR_RATIO_PERCENT
+            .lock()
+            .unwrap()
+            .record(forward_ratio_percent)
+            .unwrap();
+    }
+
     H_PROTOCOL.lock().unwrap().record(conn.proto as u64).unwrap();
     H_DST_PORT.lock().unwrap().record(conn.dst_port as u64).unwrap();
 
-    // Long-lived flows only
-    if duration_secs >= 10 {
-        let throughput_bps = bytes.saturating_mul(8) / duration_secs;
+    let throughput_bps = bytes.saturating_mul(8) / duration_secs;
 
+    // Initial flow inspection logic
+    if duration_secs >= 10 {
         H_DURATION.lock().unwrap().record(duration_secs).unwrap();
         H_THROUGHPUT
             .lock()
@@ -153,6 +191,66 @@ pub fn record_data(conn: &ConnVolume) {
 
         let mut map = H_DUR_THR_2D.lock().unwrap();
         *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+    }
+
+    // Looking for large flows with high throughput
+    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
+        && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
+    {
+        // --- Transport + Port Class (for LARGE flows only) ---
+
+        // Check which ports have larger flows, separated by TCP / UDP (characterizing protocol/port of large flows)
+
+        // Check both ports of UDP connection and see which is in assigned port space
+        // if udp { if ft.dst < 1024 record, else if ft.src < 1024 record // well known
+        //  else if ft.dst < 41952, else if ft.src < 41592 record // assigned
+        // else record dst // ephemeral}
+
+        let port_class = match conn.proto {
+            6 => { // TCP
+                let port = conn.dst_port;
+                if port < 1024 {
+                    0 // well-known
+                } else if port < 49152 {
+                    1 // registered
+                } else {
+                    2 // ephemeral
+                }
+            }
+            17 => { // UDP
+                let src = conn.src_port;
+                let dst = conn.dst_port;
+
+                // Prefer well-known
+                if src < 1024 || dst < 1024 {
+                    3 // UDP well-known
+                }
+                // Then registered
+                else if src < 49152 || dst < 49152 {
+                    4 // UDP registered
+                }
+                // Else ephemeral
+                else {
+                    5 // UDP ephemeral
+                }
+            }
+            _ => return, // ignore non-TCP/UDP
+        };
+
+        H_LARGE_PROTO_PORT_CLASS
+            .lock()
+            .unwrap()
+            .record(port_class)
+            .ok();
+
+        let bucket = match &conn.l7_proto {
+            Some(SessionProto::Http) => 1,
+            Some(SessionProto::Tls) => 2,
+            Some(SessionProto::Quic) => 3,
+            _ => 0, // Unknown or other
+        };
+
+        H_LARGE_FLOW_L7.lock().unwrap().record(bucket).unwrap();
     }
 }
 
@@ -203,6 +301,13 @@ fn main() {
     dump_hist(out_dir.join("directionality_dominance.csv"), &H_DIR_DOMINANCE.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("protocol.csv"), &H_PROTOCOL.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("dst_port.csv"), &H_DST_PORT.lock().unwrap()).unwrap();
+    dump_hist(out_dir.join("direction_ratio_percent.csv"), &H_DIR_RATIO_PERCENT.lock().unwrap()).unwrap();
+    dump_hist(out_dir.join("large_proto_port_class.csv"), &H_LARGE_PROTO_PORT_CLASS.lock().unwrap()).unwrap();
+
+    dump_hist(
+        out_dir.join("large_flow_l7_protocol.csv"),
+        &H_LARGE_FLOW_L7.lock().unwrap(),
+    ).unwrap();
 
     dump_2d_hist(
         out_dir.join("duration_vs_throughput_2d.csv"),
