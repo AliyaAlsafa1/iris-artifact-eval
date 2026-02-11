@@ -12,7 +12,7 @@ use iris_core::protocols::stream::SessionProto;
 
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 120;
-const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000; // 10_000_000 10 Mbps (tune as needed)
+const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000_000; // 10 Mbps
 
 // GLOBAL HISTOGRAMS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
@@ -155,8 +155,24 @@ pub fn record_data(conn: &ConnVolume) {
     H_BYTES.lock().unwrap().record(bytes).unwrap();
     H_PACKETS.lock().unwrap().record(packets).unwrap();
 
+    // Direction dominance (encoded TCP/UDP in same histogram)
+    // TCP: 0 = rev-heavy, 1 = fwd-heavy
+    // UDP: 2 = rev-heavy, 3 = fwd-heavy
+
     let dir = if conn.fwd_bytes >= conn.rev_bytes { 1 } else { 0 };
-    H_DIR_DOMINANCE.lock().unwrap().record(dir).unwrap();
+
+    let encoded_dir = match conn.proto {
+        6 => dir,         // TCP
+        17 => dir + 2,    // UDP
+        _ => return,
+    };
+
+    H_DIR_DOMINANCE
+        .lock()
+        .unwrap()
+        .record(encoded_dir)
+        .unwrap();
+
 
     // Direction ratio analysis
     let total_bytes = conn.fwd_bytes + conn.rev_bytes;
@@ -165,12 +181,23 @@ pub fn record_data(conn: &ConnVolume) {
         let forward_ratio_percent =
             (conn.fwd_bytes * 100) / total_bytes;
 
+        let ratio = forward_ratio_percent.min(100);
+
+        // TCP: 0–100
+        // UDP: 101–201
+        let encoded_ratio = match conn.proto {
+            6 => ratio,
+            17 => ratio + 101,
+            _ => return,
+        };
+
         H_DIR_RATIO_PERCENT
             .lock()
             .unwrap()
-            .record(forward_ratio_percent)
+            .record(encoded_ratio)
             .unwrap();
     }
+
 
     H_PROTOCOL.lock().unwrap().record(conn.proto as u64).unwrap();
     H_DST_PORT.lock().unwrap().record(conn.dst_port as u64).unwrap();
@@ -180,10 +207,23 @@ pub fn record_data(conn: &ConnVolume) {
     // Initial flow inspection logic
     if duration_secs >= 10 {
         H_DURATION.lock().unwrap().record(duration_secs).unwrap();
+        // encoded throughput = throughput * 2 + proto_index
+        // TCP index = 0
+        // UDP index = 1
+
+        let proto_index = match conn.proto {
+            6 => 0,
+            17 => 1,
+            _ => return,
+        };
+
+        let encoded_throughput =
+            throughput_bps.saturating_mul(2) + proto_index;
+
         H_THROUGHPUT
             .lock()
             .unwrap()
-            .record(throughput_bps.max(1))
+            .record(encoded_throughput.max(1))
             .unwrap();
 
         let d_bucket = duration_bucket_secs(duration_secs);
@@ -194,9 +234,9 @@ pub fn record_data(conn: &ConnVolume) {
     }
 
     // Looking for large flows with high throughput
-    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
-        && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
-    {
+  //  if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
+   //     && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
+   // {
         // --- Transport + Port Class (for LARGE flows only) ---
 
         // Check which ports have larger flows, separated by TCP / UDP (characterizing protocol/port of large flows)
@@ -206,52 +246,54 @@ pub fn record_data(conn: &ConnVolume) {
         //  else if ft.dst < 41952, else if ft.src < 41592 record // assigned
         // else record dst // ephemeral}
 
-        let port_class = match conn.proto {
+        let port_class_opt = match conn.proto {
             6 => { // TCP
                 let port = conn.dst_port;
-                if port < 1024 {
-                    0 // well-known
+                Some(if port < 1024 {
+                    0 // TCP well-known
                 } else if port < 49152 {
-                    1 // registered
+                    1 // TCP registered
                 } else {
-                    2 // ephemeral
-                }
+                    2 // TCP ephemeral
+                })
             }
             17 => { // UDP
                 let src = conn.src_port;
                 let dst = conn.dst_port;
 
-                // Prefer well-known
-                if src < 1024 || dst < 1024 {
+                Some(if src < 1024 || dst < 1024 {
                     3 // UDP well-known
-                }
-                // Then registered
-                else if src < 49152 || dst < 49152 {
+                } else if src < 49152 || dst < 49152 {
                     4 // UDP registered
-                }
-                // Else ephemeral
-                else {
+                } else {
                     5 // UDP ephemeral
-                }
+                })
             }
-            _ => return, // ignore non-TCP/UDP
+            _ => None, // don't record port class, but don't exit
         };
 
-        H_LARGE_PROTO_PORT_CLASS
+        if let Some(port_class) = port_class_opt {
+            H_LARGE_PROTO_PORT_CLASS
+                .lock()
+                .unwrap()
+                .record(port_class)
+                .unwrap();
+        }
+
+        if let Some(proto) = &conn.l7_proto {
+            let bucket = match proto {
+                SessionProto::Http => 1,
+                SessionProto::Tls => 2,
+                SessionProto::Quic => 3,
+                _ => 0,
+            };
+
+        H_LARGE_FLOW_L7
             .lock()
             .unwrap()
-            .record(port_class)
-            .ok();
-
-        let bucket = match &conn.l7_proto {
-            Some(SessionProto::Http) => 1,
-            Some(SessionProto::Tls) => 2,
-            Some(SessionProto::Quic) => 3,
-            _ => 0, // Unknown or other
-        };
-
-        H_LARGE_FLOW_L7.lock().unwrap().record(bucket).unwrap();
-    }
+            .record(bucket)
+            .unwrap();
+        }
 }
 
 // WRITE TO CSV

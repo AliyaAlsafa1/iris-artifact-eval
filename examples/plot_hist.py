@@ -178,7 +178,6 @@ if __name__ == "__main__":
     packets = load_hist(base / "packet_count.csv")
     plot_bars(
         bucketize(packets, [
-            # Change these measurements for granularity in the beginning and then more spread out for larger flows
             (2, 10, "2–10"),
             (10, 2_000, "10–2k"),
             (2_000, 5_000, "2k–5k"),
@@ -192,20 +191,44 @@ if __name__ == "__main__":
         out / "packets.png"
     )
 
-    # ---------- Throughput ----------
-    throughput = load_hist(base / "throughput_bps.csv")
+    # ---------- Throughput (Decoded TCP vs UDP) ----------
+    throughput_encoded = load_hist(base / "throughput_bps_encoded.csv")
+
+    tcp_data = []
+    udp_data = []
+
+    for value, count in throughput_encoded:
+        value = int(value)
+        proto = value % 2
+        throughput = value // 2
+
+        if proto == 0:
+            tcp_data.append((throughput, count))
+        else:
+            udp_data.append((throughput, count))
+
+    throughput_buckets = [
+        (0, 1_000, "0–1 kbps"),
+        (1_000, 10_000, "1–10 kbps"),
+        (10_000, 100_000, "10–100 kbps"),
+        (100_000, 1_000_000, "100 kbps–1 Mbps"),
+        (1_000_000, None, "1+ Mbps"),
+    ]
+
     plot_bars(
-        bucketize(throughput, [
-            (0, 1_000, "0–1 kbps"),
-            (1_000, 10_000, "1–10 kbps"),
-            (10_000, 100_000, "10–100 kbps"),
-            (100_000, 1_000_000, "100 kbps–1 Mbps"),
-            (1_000_000, None, "1+ Mbps"),
-        ]),
-        "Flow Throughput",
+        bucketize(tcp_data, throughput_buckets),
+        "TCP Flow Throughput",
         "Throughput (bps)",
-        out / "throughput.png"
+        out / "throughput_tcp.png"
     )
+
+    plot_bars(
+        bucketize(udp_data, throughput_buckets),
+        "UDP Flow Throughput",
+        "Throughput (bps)",
+        out / "throughput_udp.png"
+    )
+
 
     # ---------- Heatmap ----------
     plot_2d_heatmap(
@@ -263,41 +286,83 @@ if __name__ == "__main__":
         out / "protocols.png"
     )
 
-    # ---------- Direction Dominance ----------
-    dir_dom = load_hist(base / "directionality_dominance.csv")
+    # ---------- Direction Dominance (Decoded TCP vs UDP) ----------
+    dir_dom = load_hist(base / "directionality_encoded.csv")
 
-    dir_counts = {
+    tcp_counts = {
+        "Reverse Dominant": 0,
+        "Forward Dominant": 0,
+    }
+
+    udp_counts = {
         "Reverse Dominant": 0,
         "Forward Dominant": 0,
     }
 
     for value, count in dir_dom:
-        if int(value) == 0:
-            dir_counts["Reverse Dominant"] += count
-        elif int(value) == 1:
-            dir_counts["Forward Dominant"] += count
+        value = int(value)
+
+        if value < 2:
+            # TCP
+            if value % 2 == 0:
+                tcp_counts["Reverse Dominant"] += count
+            else:
+                tcp_counts["Forward Dominant"] += count
+        else:
+            # UDP
+            if value % 2 == 0:
+                udp_counts["Reverse Dominant"] += count
+            else:
+                udp_counts["Forward Dominant"] += count
 
     plot_bars(
-        dir_counts,
-        "Flow Direction Dominance",
+        tcp_counts,
+        "TCP Flow Direction Dominance",
         "Dominant Direction",
-        out / "direction_dominance.png"
+        out / "direction_dominance_tcp.png"
     )
 
-    # ---------- Direction Ratio ----------
-    dir_ratio = load_hist(base / "direction_ratio_percent.csv")
+    plot_bars(
+        udp_counts,
+        "UDP Flow Direction Dominance",
+        "Dominant Direction",
+        out / "direction_dominance_udp.png"
+    )
+
+    # ---------- Direction Ratio (Decoded TCP vs UDP) ----------
+    dir_ratio_encoded = load_hist(base / "direction_ratio_encoded.csv")
+
+    tcp_ratio = []
+    udp_ratio = []
+
+    for value, count in dir_ratio_encoded:
+        value = int(value)
+
+        if value <= 100:
+            tcp_ratio.append((value, count))
+        else:
+            udp_ratio.append((value - 101, count))
+
+    ratio_buckets = [
+        (0, 25, "0–25%"),
+        (25, 50, "25–50%"),
+        (50, 75, "50–75%"),
+        (75, 100, "75–100%"),
+        (100, None, "100%"),
+    ]
 
     plot_bars(
-        bucketize(dir_ratio, [
-            (0, 25, "0–25%"),
-            (25, 50, "25–50%"),
-            (50, 75, "50–75%"),
-            (75, 100, "75–100%"),
-            (100, None, "100%"),
-        ]),
-        "Forward Byte Ratio per Flow",
+        bucketize(tcp_ratio, ratio_buckets),
+        "TCP Forward Byte Ratio",
         "Forward traffic percentage",
-        out / "direction_ratio.png"
+        out / "direction_ratio_tcp.png"
+    )
+
+    plot_bars(
+        bucketize(udp_ratio, ratio_buckets),
+        "UDP Forward Byte Ratio",
+        "Forward traffic percentage",
+        out / "direction_ratio_udp.png"
     )
 
     # ---------- Large Flow Port Class ----------
