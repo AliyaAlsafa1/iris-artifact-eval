@@ -196,14 +196,9 @@ pub(crate) fn datatype_func_to_tokens(dt: &DatatypeFnSpec) -> proc_macro2::Token
         .expect(&format!("No parameters provided in function {:?}", dt));
     let dt_name = Ident::new(&dt.group_name.to_lowercase(), Span::call_site());
     let fname = Ident::new(&dt.func.name, Span::call_site());
-    if param == "L4Pdu" {
-        return quote! {
-            conn.tracked.#dt_name.#fname(pdu);
-        };
-    } else if param == "StateTxData" {
-        return quote! {
-            conn.tracked.#dt_name.#fname(&tx);
-        };
+    if BUILTIN_TYPES.iter().any(|inp| inp.name() == param) {
+        let builtin = builtin_to_tokens(&param);
+        conn.tracked.#dt_name.#fname(#builtin);
     }
     panic!("Unknown param for {}: {}", dt.func.name, param);
 }

@@ -42,7 +42,8 @@ lazy_static! {
             name: "CoreId".into(),
             level: Some(DataLevel::Packet),
             expl_parsers: vec![],
-        })
+        }),
+        // TODO StateTx (without data?)
     ];
 }
 
@@ -657,6 +658,11 @@ impl SubscriptionDecoder {
                     }
                     // 3. Filter predicate might match
                     if level.filter_preds.iter().any(|l| l == filter_layer) {
+                        return true;
+                    }
+                }
+                for dt in &cb.datatypes {
+                    if dt.updates.iter().any(|l| l == filter_layer) {
                         return true;
                     }
                 }
