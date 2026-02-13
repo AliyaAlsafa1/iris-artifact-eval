@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use iris_core::protocols::stream::SessionProto;
 
 // GLOBAL CONSTANTS
-const LARGE_FLOW_MIN_DURATION_SECS: u64 = 120;
+const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
 const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000_000; // 10 Mbps
 
 // GLOBAL HISTOGRAMS
@@ -156,7 +156,7 @@ pub fn record_data(conn: &ConnVolume) {
     H_PACKETS.lock().unwrap().record(packets).unwrap();
 
     // Direction dominance (encoded TCP/UDP in same histogram)
-    // TCP: 0 = rev-heavy, 1 = fwd-heavy
+    // TCP: 0 = rev-heavy, 1 = fwd-heavy 
     // UDP: 2 = rev-heavy, 3 = fwd-heavy
 
     let dir = if conn.fwd_bytes >= conn.rev_bytes { 1 } else { 0 };
@@ -198,7 +198,6 @@ pub fn record_data(conn: &ConnVolume) {
             .unwrap();
     }
 
-
     H_PROTOCOL.lock().unwrap().record(conn.proto as u64).unwrap();
     H_DST_PORT.lock().unwrap().record(conn.dst_port as u64).unwrap();
 
@@ -234,18 +233,12 @@ pub fn record_data(conn: &ConnVolume) {
     }
 
     // Looking for large flows with high throughput
-  //  if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
-   //     && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
-   // {
+    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
+      && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
+    {
         // --- Transport + Port Class (for LARGE flows only) ---
 
         // Check which ports have larger flows, separated by TCP / UDP (characterizing protocol/port of large flows)
-
-        // Check both ports of UDP connection and see which is in assigned port space
-        // if udp { if ft.dst < 1024 record, else if ft.src < 1024 record // well known
-        //  else if ft.dst < 41952, else if ft.src < 41592 record // assigned
-        // else record dst // ephemeral}
-
         let port_class_opt = match conn.proto {
             6 => { // TCP
                 let port = conn.dst_port;
@@ -294,6 +287,7 @@ pub fn record_data(conn: &ConnVolume) {
             .record(bucket)
             .unwrap();
         }
+    }
 }
 
 // WRITE TO CSV

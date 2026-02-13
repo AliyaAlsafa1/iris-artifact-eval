@@ -86,7 +86,7 @@ Parsed callback: "record_data"
 Caching input in memory
 Done with macros - beginning code generation
 
-Parsers: tls, quic, http
+Parsers: http, tls, quic
 
 Tree Per-Packet:
 `- ethernet (0)
@@ -105,6 +105,18 @@ Tree L4FirstPacket
    `- 4: ipv6 x
       |- 5: tcp -- Actions: L4: Actions[Update, PassThrough, Track] (Until:  L7OnDisc: Actions[PassThrough], L4Terminated: Actions[Update, PassThrough, Track]) L7: Actions[Parse] (Until:  L7OnDisc: Actions[Parse], L4Terminated: Actions[Parse])
       `- 6: udp -- Actions: L4: Actions[Update, PassThrough, Track] (Until:  L7OnDisc: Actions[PassThrough], L4Terminated: Actions[Update, PassThrough, Track]) L7: Actions[Parse] (Until:  L7OnDisc: Actions[Parse], L4Terminated: Actions[Parse]) x
+
+Tree L4InPayload(false)
+,`- 0: ethernet
+   |- 1: tcp -- Actions: L4: Actions[Update, Track] (Until:  L4Terminated: Actions[Update, Track]) L7: None
+   |  `- 2: L7=Discovery -- Actions: L4: Actions[PassThrough] (Until:  L7OnDisc: Actions[PassThrough], L4Terminated: Actions[PassThrough]) L7: Actions[Parse] (Until:  L7OnDisc: Actions[Parse], L4Terminated: Actions[Parse])
+   `- 3: udp -- Actions: L4: Actions[Update, Track] (Until:  L4Terminated: Actions[Update, Track]) L7: None x
+      `- 4: L7=Discovery -- Actions: L4: Actions[PassThrough] (Until:  L7OnDisc: Actions[PassThrough], L4Terminated: Actions[PassThrough]) L7: Actions[Parse] (Until:  L7OnDisc: Actions[Parse], L4Terminated: Actions[Parse])
+
+Tree L7OnDisc
+,`- 0: ethernet
+   |- 1: tcp -- Actions: L4: Actions[Update, Track] (Until:  L4Terminated: Actions[Update, Track]) L7: None
+   `- 2: udp -- Actions: L4: Actions[Update, Track] (Until:  L4Terminated: Actions[Update, Track]) L7: None x
 
 Tree L4Terminated
 ,`- 0: ethernet Invoke: ( record_data, )
@@ -126,7 +138,7 @@ use std::io::{BufWriter, Write};
 use std::collections::HashMap;
 use iris_core::protocols::stream::SessionProto;
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 120;
-const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000;
+const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000_000;
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> = Lazy::new(|| Mutex::new(
     Histogram::new(3).unwrap(),
 ));
@@ -547,49 +559,68 @@ pub fn record_data(conn: &ConnVolume) {
     H_BYTES.lock().unwrap().record(bytes).unwrap();
     H_PACKETS.lock().unwrap().record(packets).unwrap();
     let dir = if conn.fwd_bytes >= conn.rev_bytes { 1 } else { 0 };
-    H_DIR_DOMINANCE.lock().unwrap().record(dir).unwrap();
+    let encoded_dir = match conn.proto {
+        6 => dir,
+        17 => dir + 2,
+        _ => return,
+    };
+    H_DIR_DOMINANCE.lock().unwrap().record(encoded_dir).unwrap();
     let total_bytes = conn.fwd_bytes + conn.rev_bytes;
     if total_bytes > 0 {
         let forward_ratio_percent = (conn.fwd_bytes * 100) / total_bytes;
-        H_DIR_RATIO_PERCENT.lock().unwrap().record(forward_ratio_percent).unwrap();
+        let ratio = forward_ratio_percent.min(100);
+        let encoded_ratio = match conn.proto {
+            6 => ratio,
+            17 => ratio + 101,
+            _ => return,
+        };
+        H_DIR_RATIO_PERCENT.lock().unwrap().record(encoded_ratio).unwrap();
     }
     H_PROTOCOL.lock().unwrap().record(conn.proto as u64).unwrap();
     H_DST_PORT.lock().unwrap().record(conn.dst_port as u64).unwrap();
     let throughput_bps = bytes.saturating_mul(8) / duration_secs;
     if duration_secs >= 10 {
         H_DURATION.lock().unwrap().record(duration_secs).unwrap();
-        H_THROUGHPUT.lock().unwrap().record(throughput_bps.max(1)).unwrap();
+        let proto_index = match conn.proto {
+            6 => 0,
+            17 => 1,
+            _ => return,
+        };
+        let encoded_throughput = throughput_bps.saturating_mul(2) + proto_index;
+        H_THROUGHPUT.lock().unwrap().record(encoded_throughput.max(1)).unwrap();
         let d_bucket = duration_bucket_secs(duration_secs);
         let t_bucket = throughput_bucket_bps(throughput_bps);
         let mut map = H_DUR_THR_2D.lock().unwrap();
         *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
     }
-    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
-        && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
-    {
-        let port_class = match conn.proto {
-            6 => {
-                let port = conn.dst_port;
-                if port < 1024 { 0 } else if port < 49152 { 1 } else { 2 }
-            }
-            17 => {
-                let src = conn.src_port;
-                let dst = conn.dst_port;
+    let port_class_opt = match conn.proto {
+        6 => {
+            let port = conn.dst_port;
+            Some(if port < 1024 { 0 } else if port < 49152 { 1 } else { 2 })
+        }
+        17 => {
+            let src = conn.src_port;
+            let dst = conn.dst_port;
+            Some(
                 if src < 1024 || dst < 1024 {
                     3
                 } else if src < 49152 || dst < 49152 {
                     4
                 } else {
                     5
-                }
-            }
-            _ => return,
-        };
-        H_LARGE_PROTO_PORT_CLASS.lock().unwrap().record(port_class).ok();
-        let bucket = match &conn.l7_proto {
-            Some(SessionProto::Http) => 1,
-            Some(SessionProto::Tls) => 2,
-            Some(SessionProto::Quic) => 3,
+                },
+            )
+        }
+        _ => None,
+    };
+    if let Some(port_class) = port_class_opt {
+        H_LARGE_PROTO_PORT_CLASS.lock().unwrap().record(port_class).unwrap();
+    }
+    if let Some(proto) = &conn.l7_proto {
+        let bucket = match proto {
+            SessionProto::Http => 1,
+            SessionProto::Tls => 2,
+            SessionProto::Quic => 3,
             _ => 0,
         };
         H_LARGE_FLOW_L7.lock().unwrap().record(bucket).unwrap();
@@ -646,7 +677,7 @@ impl Trackable for TrackedWrapper {
         &self.core_id
     }
     fn parsers() -> ParserRegistry {
-        ParserRegistry::from_strings(Vec::from(["tls", "quic", "http"]))
+        ParserRegistry::from_strings(Vec::from(["http", "tls", "quic"]))
     }
     fn clear(&mut self) {
         self.packets.clear();
@@ -689,6 +720,8 @@ pub fn filter() -> iris_core::filter::FilterFactory<TrackedWrapper> {
     fn state_tx(conn: &mut ConnInfo<TrackedWrapper>, tx: &iris_core::StateTransition) {
         match tx {
             StateTransition::L4FirstPacket => tx_l4firstpacket(conn, &tx),
+            StateTransition::L4InPayload(_) => tx_l4inpayload(conn, &tx),
+            StateTransition::L7OnDisc => tx_l7ondisc(conn, &tx),
             StateTransition::L4Terminated => tx_l4terminated(conn, &tx),
             _ => {}
         }
@@ -854,6 +887,181 @@ pub fn filter() -> iris_core::filter::FilterFactory<TrackedWrapper> {
                         },
                     );
             }
+        }
+        conn.linfo.actions.extend(&transport_actions);
+        conn.layers[0].extend_actions(&layer0_actions);
+    }
+    fn tx_l4inpayload(conn: &mut ConnInfo<TrackedWrapper>, tx: &StateTransition) {
+        let mut ret = false;
+        let tx = iris_core::StateTxData::from_tx(tx, &conn.layers[0]);
+        let mut transport_actions = iris_core::conntrack::TrackedActions::new();
+        let mut layer0_actions = iris_core::conntrack::TrackedActions::new();
+        if let Ok(tcp) = &iris_core::protocols::stream::ConnData::parse_to::<
+            iris_core::protocols::stream::conn::TcpCData,
+        >(&conn.cdata) {
+            if conn.layers[0].layer_info().state
+                == iris_core::conntrack::LayerState::Discovery
+            {
+                transport_actions
+                    .extend(
+                        &TrackedActions {
+                            active: iris_core::conntrack::Actions::from(4),
+                            refresh_at: [
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(4),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(4),
+                            ],
+                        },
+                    );
+                layer0_actions
+                    .extend(
+                        &TrackedActions {
+                            active: iris_core::conntrack::Actions::from(2),
+                            refresh_at: [
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(2),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(2),
+                            ],
+                        },
+                    );
+            }
+            transport_actions
+                .extend(
+                    &TrackedActions {
+                        active: iris_core::conntrack::Actions::from(9),
+                        refresh_at: [
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(9),
+                        ],
+                    },
+                );
+        } else if let Ok(udp) = &iris_core::protocols::stream::ConnData::parse_to::<
+            iris_core::protocols::stream::conn::UdpCData,
+        >(&conn.cdata) {
+            if conn.layers[0].layer_info().state
+                == iris_core::conntrack::LayerState::Discovery
+            {
+                transport_actions
+                    .extend(
+                        &TrackedActions {
+                            active: iris_core::conntrack::Actions::from(4),
+                            refresh_at: [
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(4),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(4),
+                            ],
+                        },
+                    );
+                layer0_actions
+                    .extend(
+                        &TrackedActions {
+                            active: iris_core::conntrack::Actions::from(2),
+                            refresh_at: [
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(2),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(0),
+                                iris_core::conntrack::Actions::from(2),
+                            ],
+                        },
+                    );
+            }
+            transport_actions
+                .extend(
+                    &TrackedActions {
+                        active: iris_core::conntrack::Actions::from(9),
+                        refresh_at: [
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(9),
+                        ],
+                    },
+                );
+        }
+        conn.linfo.actions.extend(&transport_actions);
+        conn.layers[0].extend_actions(&layer0_actions);
+    }
+    fn tx_l7ondisc(conn: &mut ConnInfo<TrackedWrapper>, tx: &StateTransition) {
+        let mut ret = false;
+        let tx = iris_core::StateTxData::from_tx(tx, &conn.layers[0]);
+        let mut transport_actions = iris_core::conntrack::TrackedActions::new();
+        let mut layer0_actions = iris_core::conntrack::TrackedActions::new();
+        conn.tracked.connvolume.proto_id(&conn.layers[0].last_protocol());
+        if let Ok(tcp) = &iris_core::protocols::stream::ConnData::parse_to::<
+            iris_core::protocols::stream::conn::TcpCData,
+        >(&conn.cdata) {
+            transport_actions
+                .extend(
+                    &TrackedActions {
+                        active: iris_core::conntrack::Actions::from(9),
+                        refresh_at: [
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(9),
+                        ],
+                    },
+                );
+        } else if let Ok(udp) = &iris_core::protocols::stream::ConnData::parse_to::<
+            iris_core::protocols::stream::conn::UdpCData,
+        >(&conn.cdata) {
+            transport_actions
+                .extend(
+                    &TrackedActions {
+                        active: iris_core::conntrack::Actions::from(9),
+                        refresh_at: [
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(0),
+                            iris_core::conntrack::Actions::from(9),
+                        ],
+                    },
+                );
         }
         conn.linfo.actions.extend(&transport_actions);
         conn.layers[0].extend_actions(&layer0_actions);

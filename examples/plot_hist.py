@@ -15,6 +15,12 @@ PROTO_MAP = {
     1: "ICMP",
 }
 
+L7_MAP = {
+    0: "Other",
+    1: "HTTP",
+    2: "TLS",
+    3: "QUIC",
+}
 
 # --------------------------
 # Load CSV (value,count)
@@ -24,20 +30,9 @@ def load_hist(csv_path):
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            data.append((float(row["value"]), int(row["count"])))
+            data.append((int(row["value"]), int(row["count"])))
     return data
 
-# --------------------------
-# Load labeled histogram
-# --------------------------
-def load_label_hist(csv_path, label_key):
-    data = {}
-    with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            label = row[label_key].upper()
-            data[label] = data.get(label, 0) + int(row["count"])
-    return data
 
 # --------------------------
 # Load 2D histogram CSV
@@ -53,6 +48,7 @@ def load_2d_hist(csv_path):
                 int(row["count"]),
             ))
     return rows
+
 
 # --------------------------
 # Bucket helper
@@ -71,6 +67,7 @@ def bucketize(data, buckets):
 
     return result
 
+
 # --------------------------
 # Plot bar chart
 # --------------------------
@@ -87,9 +84,8 @@ def plot_bars(bucket_counts, title, xlabel, filename):
 
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
 
-    if values:
-        ymax = max(values) * 1.1
-        ax.set_ylim(0, ymax)
+    ymax = max(values) * 1.1 if values else 1
+    ax.set_ylim(0, ymax)
 
     for i, v in enumerate(values):
         ax.text(i, v + ymax*0.01, str(v), ha="center", fontsize=8)
@@ -100,6 +96,7 @@ def plot_bars(bucket_counts, title, xlabel, filename):
     fig.tight_layout()
     fig.savefig(filename)
     plt.close(fig)
+
 
 # --------------------------
 # Plot 2D heatmap
@@ -136,10 +133,12 @@ def plot_2d_heatmap(rows, title, filename):
     plt.savefig(filename)
     plt.close()
 
+
 # --------------------------
 # Main
 # --------------------------
 if __name__ == "__main__":
+
     base = Path("hists")
     out = Path("plots")
     out.mkdir(exist_ok=True)
@@ -150,9 +149,9 @@ if __name__ == "__main__":
         bucketize(duration, [
             (10, 30, "10–30s"),
             (30, 60, "30–60s"),
-            (60, 90, "60–90s"),
-            (90, 120, "90–120s"),
-            (120, None, "120s+"),
+            (60, 120, "60–120s"),
+            (120, 300, "120–300s"),
+            (300, None, "300s+"),
         ]),
         "Flow Duration",
         "Duration bucket",
@@ -166,53 +165,53 @@ if __name__ == "__main__":
             (0, 1_000, "0–1kB"),
             (1_000, 10_000, "1k–10kB"),
             (10_000, 100_000, "10k–100kB"),
-            (100_000, 500_000, "100k–500kB"),
-            (500_000, None, "500kB+"),
+            (100_000, 1_000_000, "100kB–1MB"),
+            (1_000_000, None, "1MB+"),
         ]),
         "Flow Volume",
         "Bytes transferred",
         out / "volume.png"
     )
 
-    # ---------- Packets ----------
+    # ---------- Packet Count ----------
     packets = load_hist(base / "packet_count.csv")
     plot_bars(
         bucketize(packets, [
             (2, 10, "2–10"),
-            (10, 2_000, "10–2k"),
-            (2_000, 5_000, "2k–5k"),
-            (5_000, 20_000, "5k–20k"),
-            (20_000, 50_000, "20k–50k"),
-            (50_000, 100_000, "50k-100k"),
-            (100_000, None, "100k+"),
-            ]),
+            (10, 100, "10–100"),
+            (100, 1000, "100–1k"),
+            (1000, 10000, "1k–10k"),
+            (10000, None, "10k+"),
+        ]),
         "Packet Count per Flow",
         "Packets",
         out / "packets.png"
     )
 
-    # ---------- Throughput (Decoded TCP vs UDP) ----------
-    throughput_encoded = load_hist(base / "throughput_bps_encoded.csv")
+    # ---------- Throughput (Decode proto index properly) ----------
+    throughput_encoded = load_hist(base / "throughput_bps.csv")
 
     tcp_data = []
     udp_data = []
 
     for value, count in throughput_encoded:
         value = int(value)
-        proto = value % 2
-        throughput = value // 2
 
-        if proto == 0:
+        proto_index = value % 2
+        throughput = value // 2   # decode original bps
+
+        if proto_index == 0:
             tcp_data.append((throughput, count))
         else:
             udp_data.append((throughput, count))
 
     throughput_buckets = [
-        (0, 1_000, "0–1 kbps"),
-        (1_000, 10_000, "1–10 kbps"),
-        (10_000, 100_000, "10–100 kbps"),
+        (0, 100_000, "<100 kbps"),
         (100_000, 1_000_000, "100 kbps–1 Mbps"),
-        (1_000_000, None, "1+ Mbps"),
+        (1_000_000, 10_000_000, "1–10 Mbps"),
+        (10_000_000, 50_000_000, "10–50 Mbps"),
+        (50_000_000, 100_000_000, "50–100 Mbps"),
+        (100_000_000, None, "100+ Mbps"),
     ]
 
     plot_bars(
@@ -230,112 +229,35 @@ if __name__ == "__main__":
     )
 
 
-    # ---------- Heatmap ----------
-    plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_2d.csv"),
-        "Flow Duration vs Throughput",
-        out / "duration_vs_throughput_heatmap.png",
-    )
+    # ---------- Direction Dominance ----------
+    dir_dom = load_hist(base / "directionality_dominance.csv")
 
-    # ---------- Ports (individual common ports) ----------
-    ports = load_hist(base / "dst_port.csv")
-
-    common_ports = {
-        80: "HTTP (80)",
-        443: "HTTPS (443)",
-        22: "SSH (22)",
-        53: "DNS (53)",
-        25: "SMTP (25)",
-    }
-
-    port_counts = {label: 0 for label in common_ports.values()}
-    port_counts.update({"Public (1024–49151)": 0, "Private (49152+)": 0})
-
-    for port, count in ports:
-        port = int(port)
-        if port in common_ports:
-            port_counts[common_ports[port]] += count
-        elif 1024 <= port <= 49151:
-            port_counts["Public (1024–49151)"] += count
-        elif port >= 49152:
-            port_counts["Private (49152+)"] += count
-
-    plot_bars(
-        port_counts,
-        "Flow Distribution by Port",
-        "Port category",
-        out / "ports.png"
-    )
-
-    # ---------- Protocols ----------
-    protocols = {}
-
-    with open(base / "protocol.csv", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            proto_num = int(row["value"])
-            count = int(row["count"])
-
-            proto_name = PROTO_MAP.get(proto_num, "Other")
-            protocols[proto_name] = protocols.get(proto_name, 0) + count
-
-    plot_bars(
-        protocols,
-        "Flow Distribution by IP Protocol",
-        "Protocol",
-        out / "protocols.png"
-    )
-
-    # ---------- Direction Dominance (Decoded TCP vs UDP) ----------
-    dir_dom = load_hist(base / "directionality_encoded.csv")
-
-    tcp_counts = {
-        "Reverse Dominant": 0,
-        "Forward Dominant": 0,
-    }
-
-    udp_counts = {
-        "Reverse Dominant": 0,
-        "Forward Dominant": 0,
-    }
+    tcp_counts = {"Reverse": 0, "Forward": 0}
+    udp_counts = {"Reverse": 0, "Forward": 0}
 
     for value, count in dir_dom:
-        value = int(value)
+        if value in (0,1):
+            tcp_counts["Forward" if value==1 else "Reverse"] += count
+        elif value in (2,3):
+            udp_counts["Forward" if value==3 else "Reverse"] += count
 
-        if value < 2:
-            # TCP
-            if value % 2 == 0:
-                tcp_counts["Reverse Dominant"] += count
-            else:
-                tcp_counts["Forward Dominant"] += count
-        else:
-            # UDP
-            if value % 2 == 0:
-                udp_counts["Reverse Dominant"] += count
-            else:
-                udp_counts["Forward Dominant"] += count
+    plot_bars(tcp_counts,
+              "TCP Flow Direction Dominance",
+              "Direction",
+              out / "direction_tcp.png")
 
-    plot_bars(
-        tcp_counts,
-        "TCP Flow Direction Dominance",
-        "Dominant Direction",
-        out / "direction_dominance_tcp.png"
-    )
+    plot_bars(udp_counts,
+              "UDP Flow Direction Dominance",
+              "Direction",
+              out / "direction_udp.png")
 
-    plot_bars(
-        udp_counts,
-        "UDP Flow Direction Dominance",
-        "Dominant Direction",
-        out / "direction_dominance_udp.png"
-    )
-
-    # ---------- Direction Ratio (Decoded TCP vs UDP) ----------
-    dir_ratio_encoded = load_hist(base / "direction_ratio_encoded.csv")
+    # ---------- Direction Ratio ----------
+    dir_ratio = load_hist(base / "direction_ratio_percent.csv")
 
     tcp_ratio = []
     udp_ratio = []
 
-    for value, count in dir_ratio_encoded:
+    for value, count in dir_ratio:
         value = int(value)
 
         if value <= 100:
@@ -345,8 +267,9 @@ if __name__ == "__main__":
 
     ratio_buckets = [
         (0, 25, "0–25%"),
-        (25, 50, "25–50%"),
-        (50, 75, "50–75%"),
+        (25, 45, "25–45%"),
+        (45, 56, "45–55% (Balanced)"),
+        (56, 75, "55–75%"),
         (75, 100, "75–100%"),
         (100, None, "100%"),
     ]
@@ -354,16 +277,17 @@ if __name__ == "__main__":
     plot_bars(
         bucketize(tcp_ratio, ratio_buckets),
         "TCP Forward Byte Ratio",
-        "Forward traffic percentage",
-        out / "direction_ratio_tcp.png"
+        "Forward %",
+        out / "ratio_tcp.png"
     )
 
     plot_bars(
         bucketize(udp_ratio, ratio_buckets),
         "UDP Forward Byte Ratio",
-        "Forward traffic percentage",
-        out / "direction_ratio_udp.png"
+        "Forward %",
+        out / "ratio_udp.png"
     )
+
 
     # ---------- Large Flow Port Class ----------
     large_port = load_hist(base / "large_proto_port_class.csv")
@@ -377,20 +301,34 @@ if __name__ == "__main__":
         5: "UDP Ephemeral",
     }
 
-    port_class_counts = {}
-
+    counts = {}
     for value, count in large_port:
-        label = port_class_map.get(int(value), "Other")
-        port_class_counts[label] = port_class_counts.get(label, 0) + count
+        label = port_class_map.get(value, "Other")
+        counts[label] = counts.get(label, 0) + count
 
-    plot_bars(
-        port_class_counts,
-        "Large Flows by Transport + Port Class",
-        "Protocol/Port Class",
-        out / "large_proto_port_class.png"
+    plot_bars(counts,
+              "Large Flows by Transport + Port Class",
+              "Protocol/Port Class",
+              out / "large_proto_port_class.png")
+
+    # ---------- Large Flow L7 ----------
+    l7 = load_hist(base / "large_flow_l7_protocol.csv")
+
+    l7_counts = {}
+    for value, count in l7:
+        label = L7_MAP.get(value, "Other")
+        l7_counts[label] = l7_counts.get(label, 0) + count
+
+    plot_bars(l7_counts,
+              "Large Flows by L7 Protocol",
+              "Application Protocol",
+              out / "large_flow_l7.png")
+
+    # ---------- Heatmap ----------
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_2d.csv"),
+        "Flow Duration vs Throughput",
+        out / "duration_vs_throughput_heatmap.png",
     )
-
-
-
 
     print("All plots written to ./plots/")

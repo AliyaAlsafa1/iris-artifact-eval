@@ -198,7 +198,9 @@ pub(crate) fn datatype_func_to_tokens(dt: &DatatypeFnSpec) -> proc_macro2::Token
     let fname = Ident::new(&dt.func.name, Span::call_site());
     if BUILTIN_TYPES.iter().any(|inp| inp.name() == param) {
         let builtin = builtin_to_tokens(&param);
-        conn.tracked.#dt_name.#fname(#builtin);
+        return quote! {
+            conn.tracked.#dt_name.#fname(#builtin);
+        }
     }
     panic!("Unknown param for {}: {}", dt.func.name, param);
 }
