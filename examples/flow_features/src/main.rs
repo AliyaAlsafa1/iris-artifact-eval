@@ -10,6 +10,8 @@ use std::io::{BufWriter, Write};
 use std::collections::HashMap;
 use iris_core::protocols::stream::SessionProto;
 
+// Still need to implement SNI testing and burstiness analysis
+
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
 const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000_000; // 10 Mbps
