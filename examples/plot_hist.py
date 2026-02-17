@@ -139,7 +139,7 @@ def plot_2d_heatmap(rows, title, filename):
 # --------------------------
 if __name__ == "__main__":
 
-    base = Path("hists")
+    base = Path("hists_0213")
     out = Path("plots")
     out.mkdir(exist_ok=True)
 

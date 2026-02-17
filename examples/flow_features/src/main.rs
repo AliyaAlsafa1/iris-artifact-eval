@@ -14,7 +14,7 @@ use iris_core::protocols::stream::SessionProto;
 
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
-const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 10_000_000; // 10 Mbps
+const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 1_000_000; // 1 Mbps
 
 // GLOBAL HISTOGRAMS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
@@ -37,6 +37,18 @@ static H_DIR_RATIO_PERCENT: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_LARGE_PROTO_PORT_CLASS: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_PURE_DIR_PROTO: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(1).unwrap()));
+static H_PURE_DIR_DST_PORT: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_PURE_DIR_DURATION: Lazy<Mutex<Histogram<u64>>> =
+    Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+static H_DUR_THR_HTTP: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static H_DUR_THR_TLS: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static H_DUR_THR_QUIC: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // HEATMAP COUNTER
 static H_DUR_THR_2D: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
@@ -178,13 +190,47 @@ pub fn record_data(conn: &ConnVolume) {
 
     // Direction ratio analysis
     let total_bytes = conn.fwd_bytes + conn.rev_bytes;
+    // if ratio is 100%, grab port number, duration
 
     if total_bytes > 0 {
-        let forward_ratio_percent =
-            (conn.fwd_bytes * 100) / total_bytes;
+    let forward_ratio_percent =
+        (conn.fwd_bytes * 100) / total_bytes;
 
         let ratio = forward_ratio_percent.min(100);
 
+        // ---- 100% unidirectional tracking ----
+        if ratio == 100 || ratio == 0 {
+            let dir_flag = if ratio == 100 { 0 } else { 1 }; 
+            // 0 = forward-only
+            // 1 = reverse-only
+
+            let proto_flag = match conn.proto {
+                6 => 0,   // TCP
+                17 => 2,  // UDP
+                _ => return,
+            };
+
+            let encoded = proto_flag + dir_flag;
+
+            H_PURE_DIR_PROTO
+                .lock()
+                .unwrap()
+                .record(encoded)
+                .unwrap();
+
+            H_PURE_DIR_DST_PORT
+                .lock()
+                .unwrap()
+                .record(conn.dst_port as u64)
+                .unwrap();
+
+            H_PURE_DIR_DURATION
+                .lock()
+                .unwrap()
+                .record(duration_secs)
+                .unwrap();
+        }
+        
         // TCP: 0–100
         // UDP: 101–201
         let encoded_ratio = match conn.proto {
@@ -208,9 +254,6 @@ pub fn record_data(conn: &ConnVolume) {
     // Initial flow inspection logic
     if duration_secs >= 10 {
         H_DURATION.lock().unwrap().record(duration_secs).unwrap();
-        // encoded throughput = throughput * 2 + proto_index
-        // TCP index = 0
-        // UDP index = 1
 
         let proto_index = match conn.proto {
             6 => 0,
@@ -230,9 +273,32 @@ pub fn record_data(conn: &ConnVolume) {
         let d_bucket = duration_bucket_secs(duration_secs);
         let t_bucket = throughput_bucket_bps(throughput_bps);
 
-        let mut map = H_DUR_THR_2D.lock().unwrap();
-        *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        // ---- Global heatmap ----
+        {
+            let mut map = H_DUR_THR_2D.lock().unwrap();
+            *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        }
+
+        // ---- L7-specific heatmaps ----
+        if let Some(proto) = &conn.l7_proto {
+            match proto {
+                SessionProto::Http => {
+                    let mut map = H_DUR_THR_HTTP.lock().unwrap();
+                    *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+                }
+                SessionProto::Tls => {
+                    let mut map = H_DUR_THR_TLS.lock().unwrap();
+                    *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+                }
+                SessionProto::Quic => {
+                    let mut map = H_DUR_THR_QUIC.lock().unwrap();
+                    *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
     }
+
 
     // Looking for large flows with high throughput
     if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
@@ -241,6 +307,8 @@ pub fn record_data(conn: &ConnVolume) {
         // --- Transport + Port Class (for LARGE flows only) ---
 
         // Check which ports have larger flows, separated by TCP / UDP (characterizing protocol/port of large flows)
+
+        // For well known ports track actual port number 
         let port_class_opt = match conn.proto {
             6 => { // TCP
                 let port = conn.dst_port;
@@ -304,6 +372,8 @@ fn dump_hist(path: PathBuf, h: &Histogram<u64>) -> std::io::Result<()> {
     Ok(())
 }
 
+// Make heatmaps for TLS, QUIC, HTTP separately
+// Maybe think about most common ports
 fn dump_2d_hist(
     path: PathBuf,
     map: &HashMap<(u64, u64), u64>,
@@ -341,17 +411,32 @@ fn main() {
     dump_hist(out_dir.join("dst_port.csv"), &H_DST_PORT.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("direction_ratio_percent.csv"), &H_DIR_RATIO_PERCENT.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("large_proto_port_class.csv"), &H_LARGE_PROTO_PORT_CLASS.lock().unwrap()).unwrap();
-
-    dump_hist(
-        out_dir.join("large_flow_l7_protocol.csv"),
-        &H_LARGE_FLOW_L7.lock().unwrap(),
-    ).unwrap();
+    dump_hist(out_dir.join("pure_direction_proto.csv"), &H_PURE_DIR_PROTO.lock().unwrap()).unwrap();
+    dump_hist(out_dir.join("pure_direction_dst_port.csv"), &H_PURE_DIR_DST_PORT.lock().unwrap()).unwrap();
+    dump_hist(out_dir.join("pure_direction_duration.csv"), &H_PURE_DIR_DURATION.lock().unwrap()).unwrap();
+    dump_hist(out_dir.join("large_flow_l7_protocol.csv"), &H_LARGE_FLOW_L7.lock().unwrap()).unwrap();
 
     dump_2d_hist(
         out_dir.join("duration_vs_throughput_2d.csv"),
         &H_DUR_THR_2D.lock().unwrap(),
     )
     .unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_http.csv"),
+        &H_DUR_THR_HTTP.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_tls.csv"),
+        &H_DUR_THR_TLS.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_quic.csv"),
+        &H_DUR_THR_QUIC.lock().unwrap(),
+    ).unwrap();
+
 
     println!("Histograms written to {}", out_dir.display());
 }
