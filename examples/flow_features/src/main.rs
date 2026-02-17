@@ -8,9 +8,14 @@ use once_cell::sync::Lazy;
 use std::{fs::File, sync::Mutex};
 use std::io::{BufWriter, Write};
 use std::collections::HashMap;
-use iris_core::protocols::stream::SessionProto;
+use iris_core::protocols::stream::{SessionProto, Session, SessionData};
+use publicsuffix::List;
+use publicsuffix::Psl;
 
-// Still need to implement SNI testing and burstiness analysis
+static PSL: Lazy<List> = Lazy::new(List::new);
+
+static H_SNI_BUCKETS: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
@@ -94,6 +99,26 @@ fn throughput_bucket_bps(bps: u64) -> u64 {
     }
 }
 
+// SNI NORMALIZATION HELPER
+fn normalize_sni(host: &str) -> Option<String> {
+    // Lowercase and trim trailing dot
+    let host = host.to_lowercase();
+    let host = host.trim_end_matches('.');
+
+    // Convert to bytes for the publicsuffix API
+    let host_bytes = host.as_bytes();
+
+    // PSL.domain returns an Option<Domain<'_>>
+    if let Some(domain) = PSL.domain(host_bytes) {
+        // Convert `domain` (which displays as the registrable domain) to String
+        return Some(
+            String::from_utf8(domain.as_bytes().to_vec()).unwrap_or_default()
+        );
+    }
+
+    None
+}
+
 // CONNECTION STATE
 #[derive(Debug, Clone)]
 #[datatype("level=L4Terminated,parsers=http&tls&quic")]
@@ -109,6 +134,7 @@ pub struct ConnVolume {
     dst_port: u16,
 
     l7_proto: Option<SessionProto>,
+    tls_sni: Option<String>,
 }
 
 impl ConnVolume {
@@ -130,6 +156,7 @@ impl ConnVolume {
             dst_port: pdu.ctxt.dst.port(),
 
             l7_proto: None,
+            tls_sni: None,
         }
     }
 
@@ -153,6 +180,17 @@ impl ConnVolume {
             self.l7_proto = Some(proto.clone());
         }
     }
+
+    #[datatype_group("ConnVolume,level=L7OnDisc")]
+    pub fn tls(&mut self, session: &Session) {
+        if let SessionData::Tls(tls) = &session.data {
+            let sni = tls.sni();
+            if !sni.is_empty() {
+                self.tls_sni = Some(sni.to_string());
+            }
+        }
+        // do not store the full handshake in ConnVolume
+    }
 }
 
 // UPDATING COUNTERS
@@ -168,6 +206,14 @@ pub fn record_data(conn: &ConnVolume) {
 
     H_BYTES.lock().unwrap().record(bytes).unwrap();
     H_PACKETS.lock().unwrap().record(packets).unwrap();
+
+    // Grab SNI and bucket it by root domain
+    if let Some(ref sni) = conn.tls_sni {
+        if let Some(bucket) = normalize_sni(sni) {
+            let mut map = H_SNI_BUCKETS.lock().unwrap();
+            *map.entry(bucket).or_insert(0) += 1;
+        }
+    }
 
     // Direction dominance (encoded TCP/UDP in same histogram)
     // TCP: 0 = rev-heavy, 1 = fwd-heavy 
@@ -230,7 +276,7 @@ pub fn record_data(conn: &ConnVolume) {
                 .record(duration_secs)
                 .unwrap();
         }
-        
+
         // TCP: 0–100
         // UDP: 101–201
         let encoded_ratio = match conn.proto {
@@ -437,6 +483,19 @@ fn main() {
         &H_DUR_THR_QUIC.lock().unwrap(),
     ).unwrap();
 
+    fn dump_sni_buckets(path: PathBuf) -> std::io::Result<()> {
+        let map = H_SNI_BUCKETS.lock().unwrap();
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
 
+        writeln!(w, "domain,count")?;
+
+        for (domain, count) in map.iter() {
+            writeln!(w, "{},{}", domain, count)?;
+        }
+
+        Ok(())
+    }
+
+    dump_sni_buckets(out_dir.join("sni_buckets.csv")).unwrap();
     println!("Histograms written to {}", out_dir.display());
 }

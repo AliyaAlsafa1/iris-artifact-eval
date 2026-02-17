@@ -49,6 +49,16 @@ def load_2d_hist(csv_path):
             ))
     return rows
 
+# --------------------------
+# Load SNI histogram CSV (domain,count)
+# --------------------------
+def load_sni(csv_path):
+    data = {}
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            data[row["domain"]] = int(row["count"])
+    return data
 
 # --------------------------
 # Bucket helper
@@ -102,8 +112,16 @@ def plot_bars(bucket_counts, title, xlabel, filename):
 # Plot 2D heatmap
 # --------------------------
 def plot_2d_heatmap(rows, title, filename):
+    if not rows:
+        print(f"[WARN] No data for heatmap: {filename}")
+        return
+
     dur_buckets = sorted(set(r[0] for r in rows))
     thr_buckets = sorted(set(r[1] for r in rows))
+
+    if len(dur_buckets) == 0 or len(thr_buckets) == 0:
+        print(f"[WARN] Empty bucket axes for heatmap: {filename}")
+        return
 
     dur_index = {v: i for i, v in enumerate(dur_buckets)}
     thr_index = {v: i for i, v in enumerate(thr_buckets)}
@@ -113,21 +131,41 @@ def plot_2d_heatmap(rows, title, filename):
     for d, t, c in rows:
         heatmap[dur_index[d], thr_index[t]] += c
 
-    plt.figure(figsize=(10, 6))
-    im = plt.imshow(
-        heatmap,
-        origin="lower",
-        aspect="auto",
-        norm=colors.LogNorm(vmin=1),
-    )
+    # If everything is zero, skip log scale
+    max_val = heatmap.max()
 
-    plt.colorbar(im, label="Flow count (log scale)")
+    plt.figure(figsize=(10, 6))
+
+    if max_val <= 0:
+        print(f"[WARN] Heatmap has only zero values: {filename}")
+        im = plt.imshow(
+            heatmap,
+            origin="lower",
+            aspect="auto",
+        )
+    else:
+        im = plt.imshow(
+            heatmap,
+            origin="lower",
+            aspect="auto",
+            norm=colors.LogNorm(vmin=1, vmax=max_val),
+        )
+
+    plt.colorbar(im, label="Flow count (log scale)" if max_val > 0 else "Flow count")
+
     plt.xlabel("Throughput bucket (bps)")
     plt.ylabel("Duration bucket (seconds)")
     plt.title(title)
 
-    plt.xticks(range(len(thr_buckets)), [f"{t:,}" for t in thr_buckets], rotation=45)
-    plt.yticks(range(len(dur_buckets)), [f"{d}s" for d in dur_buckets])
+    if len(thr_buckets) > 1:
+        plt.xticks(range(len(thr_buckets)), [f"{t:,}" for t in thr_buckets], rotation=45)
+    else:
+        plt.xticks([0], [f"{thr_buckets[0]:,}"])
+
+    if len(dur_buckets) > 1:
+        plt.yticks(range(len(dur_buckets)), [f"{d}s" for d in dur_buckets])
+    else:
+        plt.yticks([0], [f"{dur_buckets[0]}s"])
 
     plt.tight_layout()
     plt.savefig(filename)
@@ -139,7 +177,7 @@ def plot_2d_heatmap(rows, title, filename):
 # --------------------------
 if __name__ == "__main__":
 
-    base = Path("hists_0213")
+    base = Path("hists")
     out = Path("plots")
     out.mkdir(exist_ok=True)
 
@@ -288,6 +326,82 @@ if __name__ == "__main__":
         out / "ratio_udp.png"
     )
 
+    # ---------- Protocol ----------
+    protocol = load_hist(base / "protocol.csv")
+
+    proto_counts = {}
+    for value, count in protocol:
+        label = PROTO_MAP.get(value, f"Proto {value}")
+        proto_counts[label] = proto_counts.get(label, 0) + count
+
+    plot_bars(proto_counts,
+            "Transport Protocol Distribution",
+            "Protocol",
+            out / "protocol.png")
+
+    # ---------- Destination Port Distribution ----------
+    dst_ports = load_hist(base / "dst_port.csv")
+
+    plot_bars(
+        bucketize(dst_ports, [
+            (0, 1024, "Well-Known (<1024)"),
+            (1024, 49152, "Registered (1024–49151)"),
+            (49152, None, "Ephemeral (49152+)"),
+        ]),
+        "Destination Port Classes",
+        "Port Range",
+        out / "dst_port_classes.png"
+    )
+
+
+    # ---------- Pure Direction Protocol ----------
+    pure_proto = load_hist(base / "pure_direction_proto.csv")
+
+    pure_map = {
+        0: "TCP Forward Only",
+        1: "TCP Reverse Only",
+        2: "UDP Forward Only",
+        3: "UDP Reverse Only",
+    }
+
+    counts = {}
+    for value, count in pure_proto:
+        label = pure_map.get(value, "Other")
+        counts[label] = counts.get(label, 0) + count
+
+    plot_bars(counts,
+            "Purely Unidirectional Flows by Protocol",
+            "Type",
+            out / "pure_direction_proto.png")
+
+    # ---------- Pure Direction Duration ----------
+    pure_dur = load_hist(base / "pure_direction_duration.csv")
+
+    plot_bars(
+        bucketize(pure_dur, [
+            (0, 10, "<10s"),
+            (10, 60, "10–60s"),
+            (60, 300, "1–5 min"),
+            (300, None, "5min+"),
+        ]),
+        "Duration of Purely Unidirectional Flows",
+        "Duration",
+        out / "pure_direction_duration.png"
+    )
+
+    # ---------- Pure Direction Destination Port ----------
+    pure_ports = load_hist(base / "pure_direction_dst_port.csv")
+
+    plot_bars(
+        bucketize(pure_ports, [
+            (0, 1024, "Well-Known"),
+            (1024, 49152, "Registered"),
+            (49152, None, "Ephemeral"),
+        ]),
+        "Pure Direction Flows by Port Class",
+        "Port Range",
+        out / "pure_direction_ports.png"
+    )
 
     # ---------- Large Flow Port Class ----------
     large_port = load_hist(base / "large_proto_port_class.csv")
@@ -330,5 +444,38 @@ if __name__ == "__main__":
         "Flow Duration vs Throughput",
         out / "duration_vs_throughput_heatmap.png",
     )
+
+    # ---------- HTTP Heatmap ----------
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_http.csv"),
+        "HTTP Duration vs Throughput",
+        out / "heatmap_http.png",
+    )
+
+    # ---------- TLS Heatmap ----------
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_tls.csv"),
+        "TLS Duration vs Throughput",
+        out / "heatmap_tls.png",
+    )
+
+    # ---------- QUIC Heatmap ----------
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_quic.csv"),
+        "QUIC Duration vs Throughput",
+        out / "heatmap_quic.png",
+    )
+
+    # ---------- TLS SNI Buckets ----------
+    sni_data = load_sni(base / "sni_buckets.csv")
+
+    # Take top 15 domains
+    top_sni = dict(sorted(sni_data.items(), key=lambda x: x[1], reverse=True)[:15])
+
+    plot_bars(top_sni,
+            "Top 15 TLS Root Domains (SNI)",
+            "Domain",
+            out / "top_sni_domains.png")
+
 
     print("All plots written to ./plots/")
