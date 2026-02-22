@@ -181,7 +181,7 @@ impl ConnVolume {
         }
     }
 
-    #[datatype_group("ConnVolume,level=L7OnDisc")]
+    #[datatype_group("ConnVolume,level=L7EndHdrs")]
     pub fn tls(&mut self, session: &Session) {
         if let SessionData::Tls(tls) = &session.data {
             let sni = tls.sni();
@@ -189,7 +189,6 @@ impl ConnVolume {
                 self.tls_sni = Some(sni.to_string());
             }
         }
-        // do not store the full handshake in ConnVolume
     }
 }
 
@@ -419,7 +418,6 @@ fn dump_hist(path: PathBuf, h: &Histogram<u64>) -> std::io::Result<()> {
 }
 
 // Make heatmaps for TLS, QUIC, HTTP separately
-// Maybe think about most common ports
 fn dump_2d_hist(
     path: PathBuf,
     map: &HashMap<(u64, u64), u64>,
