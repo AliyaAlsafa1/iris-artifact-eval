@@ -14,12 +14,13 @@ use publicsuffix::Psl;
 
 static PSL: Lazy<List> = Lazy::new(List::new);
 
-static H_SNI_BUCKETS: Lazy<Mutex<HashMap<String, u64>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
 const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 1_000_000; // 1 Mbps
+
+// GLOBAL COUNTERS
+static TOTAL_BYTES: Lazy<Mutex<u128>> = Lazy::new(|| Mutex::new(0));
+static LONG_LIVED_BYTES: Lazy<Mutex<u128>> = Lazy::new(|| Mutex::new(0));
 
 // GLOBAL HISTOGRAMS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
@@ -42,12 +43,14 @@ static H_DIR_RATIO_PERCENT: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_LARGE_PROTO_PORT_CLASS: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+
 static H_PURE_DIR_PROTO: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(1).unwrap()));
 static H_PURE_DIR_DST_PORT: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
 static H_PURE_DIR_DURATION: Lazy<Mutex<Histogram<u64>>> =
     Lazy::new(|| Mutex::new(Histogram::new(3).unwrap()));
+
 static H_DUR_THR_HTTP: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static H_DUR_THR_TLS: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
@@ -55,8 +58,74 @@ static H_DUR_THR_TLS: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
 static H_DUR_THR_QUIC: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-// HEATMAP COUNTER
+static H_SNI_BUCKETS: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static H_SNI_LONG_LIVED: Lazy<Mutex<HashMap<String, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static H_DUR_PORT: Lazy<Mutex<HashMap<(u64, u16), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static H_PORT_LONG_SHORT: Lazy<Mutex<HashMap<(u16, u8), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// BURSTINESS HEATMAPS:
+// Change to heatmap of very bursty in first two seconds vs throughput for < 5 second flows
+// Change to heatmap of very bursty vs throughput 5 - 10 second flows
+// Change to heatmap of very bursty vs throughput 10 - 30 second flows
+// Change to heatmap of very bursty vs throughput 30 - 60 second flows
+// Change to heatmap of very bursty vs throughput 60+ second flows
+static H_BURSTY_THR_LT5: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_BURSTY_THR_5_10: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_BURSTY_THR_10_30: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_BURSTY_THR_30_60: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_BURSTY_THR_60P: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// ADD DURATION VS THROUGHPUT BUCKETED BY PORTS
+// Add heatmap of duration vs throughput for 443 port
+// Add heatmap of  duration vs throughput 22 port
+// Add heatmap of  duration vs throughput 80 port
+// Add any other heatmaps for commonly used ports?
+// Add heatmap of  duration vs throughput 8801 - 8810 ports
+// Add heatmap of  duration vs throughput  3478 - 3481 ports
+// Add heatmap of  duration vs throughput  19302 - 19309
+
+// DURATION HEATMAPS:
 static H_DUR_THR_2D: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new())); // general duration vs. throughput heatmap (all flows)
+
+static H_DUR_THR_443: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_22: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_80: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_8801_8810: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_3478_3481: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_19302_19309: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_WELL_KNOWN: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_REGISTERED: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+static H_DUR_THR_EPHEMERAL: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // COMMAND ARGS
@@ -135,6 +204,11 @@ pub struct ConnVolume {
 
     l7_proto: Option<SessionProto>,
     tls_sni: Option<String>,
+
+    last_packet_ts: Option<Instant>,
+    iat_sum_ns: u128,
+    iat_sq_sum_ns: u128,
+    iat_count: u64,
 }
 
 impl ConnVolume {
@@ -157,6 +231,11 @@ impl ConnVolume {
 
             l7_proto: None,
             tls_sni: None,
+
+            last_packet_ts: Some(ts),
+            iat_sum_ns: 0,
+            iat_sq_sum_ns: 0,
+            iat_count: 0,
         }
     }
 
@@ -165,6 +244,21 @@ impl ConnVolume {
         let bytes = pdu.mbuf.data_len() as u64;
         self.packet_count += 1;
         self.byte_count += bytes;
+
+        // --- IAT computation (FIRST 2 SECONDS ONLY) ---
+        if let Some(last_ts) = self.last_packet_ts {
+            let delta = (pdu.ts - last_ts).as_nanos();
+
+            let elapsed = (pdu.ts - self.start_ts).as_secs();
+
+            if elapsed < 2 {
+                self.iat_sum_ns += delta;
+                self.iat_sq_sum_ns += delta * delta;
+                self.iat_count += 1;
+            }
+        }
+
+        self.last_packet_ts = Some(pdu.ts);
         self.end_ts = pdu.ts;
 
         if pdu.dir {
@@ -195,6 +289,7 @@ impl ConnVolume {
 // UPDATING COUNTERS
 #[callback("tcp or udp,level=L4Terminated")]
 pub fn record_data(conn: &ConnVolume) {
+    // Filter out single-packet flows
     if conn.packet_count <= 1 {
         return;
     }
@@ -203,14 +298,66 @@ pub fn record_data(conn: &ConnVolume) {
     let bytes = conn.byte_count.max(1);
     let packets = conn.packet_count;
 
+    // Record basic volume and duration metrics
     H_BYTES.lock().unwrap().record(bytes).unwrap();
     H_PACKETS.lock().unwrap().record(packets).unwrap();
+
+    // Compute burstiness (coefficient of variation)
+    let burstiness = if conn.iat_count > 1 {
+        let mean = conn.iat_sum_ns as f64 / conn.iat_count as f64;
+        let variance =
+            (conn.iat_sq_sum_ns as f64 / conn.iat_count as f64)
+            - (mean * mean);
+
+        if variance > 0.0 && mean > 0.0 {
+            variance.sqrt() / mean
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Compute throughput (bps)
+    let throughput = (bytes * 8) / duration_secs;
+
+    // Bucket throughput (example: round to nearest 100 kbps)
+    let thr_bucket = (throughput / 100_000) * 100_000;
+
+    // Bucket burstiness
+    let burst_bucket = (burstiness * 100.0) as u64;
+
+    // Select duration bucket
+    let target_map = if duration_secs < 5 {
+        &H_BURSTY_THR_LT5
+    } else if duration_secs < 10 {
+        &H_BURSTY_THR_5_10
+    } else if duration_secs < 30 {
+        &H_BURSTY_THR_10_30
+    } else if duration_secs < 60 {
+        &H_BURSTY_THR_30_60
+    } else {
+        &H_BURSTY_THR_60P
+    };
+
+    let mut guard = target_map.lock().unwrap();
+    *guard.entry((burst_bucket, thr_bucket)).or_insert(0) += 1;
 
     // Grab SNI and bucket it by root domain
     if let Some(ref sni) = conn.tls_sni {
         if let Some(bucket) = normalize_sni(sni) {
-            let mut map = H_SNI_BUCKETS.lock().unwrap();
-            *map.entry(bucket).or_insert(0) += 1;
+
+            // ---- All flows ----
+            {
+                let mut map = H_SNI_BUCKETS.lock().unwrap();
+                *map.entry(bucket.clone()).or_insert(0) += 1;
+            }
+
+            // ---- Long-lived flows only ----
+            if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS {
+                let mut map = H_SNI_LONG_LIVED.lock().unwrap();
+                *map.entry(bucket).or_insert(0) += 1;
+            }
         }
     }
 
@@ -291,6 +438,7 @@ pub fn record_data(conn: &ConnVolume) {
             .unwrap();
     }
 
+    // Basic protocol and dst port recording
     H_PROTOCOL.lock().unwrap().record(conn.proto as u64).unwrap();
     H_DST_PORT.lock().unwrap().record(conn.dst_port as u64).unwrap();
 
@@ -318,10 +466,84 @@ pub fn record_data(conn: &ConnVolume) {
         let d_bucket = duration_bucket_secs(duration_secs);
         let t_bucket = throughput_bucket_bps(throughput_bps);
 
-        // ---- Global heatmap ----
+        // ---- Port CLASS Duration vs Throughput Heatmaps ----
+
+        let (well, registered, ephemeral) = if conn.proto == 6 {
+            // TCP
+            if conn.dst_port < 1024 {
+                (true, false, false)
+            } else if conn.dst_port < 49152 {
+                (false, true, false)
+            } else {
+                (false, false, true)
+            }
+        } else if conn.proto == 17 {
+            // UDP (consider either src or dst)
+            if conn.src_port < 1024 || conn.dst_port < 1024 {
+                (true, false, false)
+            } else if conn.src_port < 49152 || conn.dst_port < 49152 {
+                (false, true, false)
+            } else {
+                (false, false, true)
+            }
+        } else {
+            (false, false, false)
+        };
+
+        if well {
+            let mut map = H_DUR_THR_WELL_KNOWN.lock().unwrap();
+            *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        }
+
+        if registered {
+            let mut map = H_DUR_THR_REGISTERED.lock().unwrap();
+            *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        }
+
+        if ephemeral {
+            let mut map = H_DUR_THR_EPHEMERAL.lock().unwrap();
+            *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        }
+    
+        // ---- Port-Specific Duration vs Throughput Heatmaps ----
+
+        match conn.dst_port {
+            443 => {
+                let mut map = H_DUR_THR_443.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            22 => {
+                let mut map = H_DUR_THR_22.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            80 => {
+                let mut map = H_DUR_THR_80.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            8801..=8810 => {
+                let mut map = H_DUR_THR_8801_8810.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            3478..=3481 => {
+                let mut map = H_DUR_THR_3478_3481.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            19302..=19309 => {
+                let mut map = H_DUR_THR_19302_19309.lock().unwrap();
+                *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+            }
+            _ => {}
+        }
+
+        // ---- Global heatmaps ----
         {
             let mut map = H_DUR_THR_2D.lock().unwrap();
             *map.entry((d_bucket, t_bucket)).or_insert(0) += 1;
+        }
+
+        {
+            let mut map = H_DUR_PORT.lock().unwrap();
+            *map.entry((d_bucket, conn.dst_port)).or_insert(0) += 1;
         }
 
         // ---- L7-specific heatmaps ----
@@ -343,6 +565,14 @@ pub fn record_data(conn: &ConnVolume) {
             }
         }
     }
+    
+    // Classify flows as long vs short based on duration threshold and track port distribution
+    let class = if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS { 1 } else { 0 };
+
+    {
+        let mut map = H_PORT_LONG_SHORT.lock().unwrap();
+        *map.entry((conn.dst_port, class)).or_insert(0) += 1;
+    }
 
 
     // Looking for large flows with high throughput
@@ -350,10 +580,7 @@ pub fn record_data(conn: &ConnVolume) {
       && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
     {
         // --- Transport + Port Class (for LARGE flows only) ---
-
-        // Check which ports have larger flows, separated by TCP / UDP (characterizing protocol/port of large flows)
-
-        // For well known ports track actual port number 
+        // For well known ports track actual port number << NOT IMPLEMENTED
         let port_class_opt = match conn.proto {
             6 => { // TCP
                 let port = conn.dst_port;
@@ -403,6 +630,17 @@ pub fn record_data(conn: &ConnVolume) {
             .unwrap();
         }
     }
+
+    // Update total and long-lived byte counters for percentage calculation
+    {
+        let mut total = TOTAL_BYTES.lock().unwrap();
+        *total += bytes as u128;
+    }
+
+    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS {
+        let mut long = LONG_LIVED_BYTES.lock().unwrap();
+        *long += bytes as u128;
+    }
 }
 
 // WRITE TO CSV
@@ -417,17 +655,19 @@ fn dump_hist(path: PathBuf, h: &Histogram<u64>) -> std::io::Result<()> {
     Ok(())
 }
 
-// Make heatmaps for TLS, QUIC, HTTP separately
-fn dump_2d_hist(
+// WRITE 2D HISTOGRAM TO CSV
+fn dump_2d_hist<K1: std::fmt::Display, K2: std::fmt::Display>(
     path: PathBuf,
-    map: &HashMap<(u64, u64), u64>,
+    header1: &str,
+    header2: &str,
+    map: &HashMap<(K1, K2), u64>,
 ) -> std::io::Result<()> {
     let f = File::create(path)?;
     let mut w = BufWriter::new(f);
 
-    writeln!(w, "duration_bucket_secs,throughput_bucket_bps,count")?;
-    for ((d, t), c) in map {
-        writeln!(w, "{},{},{}", d, t, c)?;
+    writeln!(w, "{},{},count", header1, header2)?;
+    for ((k1, k2), c) in map {
+        writeln!(w, "{},{},{}", k1, k2, c)?;
     }
     Ok(())
 }
@@ -446,6 +686,7 @@ fn main() {
         Runtime::new(config, filter).unwrap();
     runtime.run();
 
+    // Dumping histograms to CSV
     dump_hist(out_dir.join("duration_secs.csv"), &H_DURATION.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("volume_bytes.csv"), &H_BYTES.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("throughput_bps.csv"), &H_THROUGHPUT.lock().unwrap()).unwrap();
@@ -459,28 +700,150 @@ fn main() {
     dump_hist(out_dir.join("pure_direction_dst_port.csv"), &H_PURE_DIR_DST_PORT.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("pure_direction_duration.csv"), &H_PURE_DIR_DURATION.lock().unwrap()).unwrap();
     dump_hist(out_dir.join("large_flow_l7_protocol.csv"), &H_LARGE_FLOW_L7.lock().unwrap()).unwrap();
+    
+    // Dumping burstiness histograms to CSV
+    dump_2d_hist(
+        out_dir.join("burst_thr_lt5.csv"),
+        "burstiness_scaled",
+        "throughput_bucket_bps",
+        &H_BURSTY_THR_LT5.lock().unwrap(),
+    ).unwrap();
 
     dump_2d_hist(
+        out_dir.join("burst_thr_5_10.csv"),
+        "burstiness_scaled",
+        "throughput_bucket_bps",
+        &H_BURSTY_THR_5_10.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("burst_thr_10_30.csv"),
+        "burstiness_scaled",
+        "throughput_bucket_bps",
+        &H_BURSTY_THR_10_30.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("burst_thr_30_60.csv"),
+        "burstiness_scaled",
+        "throughput_bucket_bps",
+        &H_BURSTY_THR_30_60.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("burst_thr_60p.csv"),
+        "burstiness_scaled",
+        "throughput_bucket_bps",
+        &H_BURSTY_THR_60P.lock().unwrap(),
+    ).unwrap();
+
+    // Dumping 2D duration histograms to CSV
+    dump_2d_hist(
         out_dir.join("duration_vs_throughput_2d.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
         &H_DUR_THR_2D.lock().unwrap(),
-    )
-    .unwrap();
+    ).unwrap();
 
     dump_2d_hist(
         out_dir.join("duration_vs_throughput_http.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
         &H_DUR_THR_HTTP.lock().unwrap(),
     ).unwrap();
 
     dump_2d_hist(
         out_dir.join("duration_vs_throughput_tls.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
         &H_DUR_THR_TLS.lock().unwrap(),
     ).unwrap();
 
     dump_2d_hist(
         out_dir.join("duration_vs_throughput_quic.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
         &H_DUR_THR_QUIC.lock().unwrap(),
     ).unwrap();
 
+    dump_2d_hist(
+        out_dir.join("duration_vs_port.csv"),
+        "duration_bucket_secs",
+        "dst_port",
+        &H_DUR_PORT.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("port_long_vs_short.csv"),
+        "dst_port",
+        "class",
+        &H_PORT_LONG_SHORT.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_443.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_443.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_22.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_22.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_80.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_80.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_8801_8810.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_8801_8810.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_3478_3481.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_3478_3481.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_19302_19309.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_19302_19309.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_well_known.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_WELL_KNOWN.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_registered.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_REGISTERED.lock().unwrap(),
+    ).unwrap();
+
+    dump_2d_hist(
+        out_dir.join("duration_vs_throughput_ephemeral.csv"),
+        "duration_bucket_secs",
+        "throughput_bucket_bps",
+        &H_DUR_THR_EPHEMERAL.lock().unwrap(),
+    ).unwrap();
+
+    // Dumping SNI bucket counts to CSV
     fn dump_sni_buckets(path: PathBuf) -> std::io::Result<()> {
         let map = H_SNI_BUCKETS.lock().unwrap();
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -495,5 +858,31 @@ fn main() {
     }
 
     dump_sni_buckets(out_dir.join("sni_buckets.csv")).unwrap();
+
+    fn dump_sni_long_lived(path: PathBuf) -> std::io::Result<()> {
+        let map = H_SNI_LONG_LIVED.lock().unwrap();
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+
+        writeln!(w, "domain,count")?;
+
+        for (domain, count) in map.iter() {
+            writeln!(w, "{},{}", domain, count)?;
+        }
+
+        Ok(())
+    }
+
+    dump_sni_long_lived(out_dir.join("sni_long_lived.csv")).unwrap();
+
+    // Finished
     println!("Histograms written to {}", out_dir.display());
+
+    // Print percentage of bytes in long-lived flows
+    let total = *TOTAL_BYTES.lock().unwrap();
+    let long = *LONG_LIVED_BYTES.lock().unwrap();
+
+    if total > 0 {
+        let percent = (long as f64 / total as f64) * 100.0;
+        println!("Long-lived flows account for {:.2}% of total bytes", percent);
+    }
 }
