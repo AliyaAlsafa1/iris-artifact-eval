@@ -9,6 +9,12 @@ from pathlib import Path
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 
+# --------------------------
+# Stage Progress Helper
+# --------------------------
+def stage(name):
+    print(f"\n[STAGE] {name}...")
+
 PROTO_MAP = {
     6: "TCP",
     17: "UDP",
@@ -121,70 +127,69 @@ def plot_bars(bucket_counts, title, xlabel, filename):
 
     fig.tight_layout()
     fig.savefig(filename)
+    print(f"  -> Wrote {filename}")
     plt.close(fig)
 
 
 # --------------------------
 # Plot 2D heatmap
 # --------------------------
-def plot_2d_heatmap(rows, title, filename):
+def plot_2d_heatmap(rows, title, filename,
+                    y_bins, x_bins,
+                    y_labels, x_labels):
+
     if not rows:
         print(f"[WARN] No data for heatmap: {filename}")
         return
 
-    dur_buckets = sorted(set(r[0] for r in rows))
-    thr_buckets = sorted(set(r[1] for r in rows))
+    print(f"  -> Raw rows: {len(rows)}")
 
-    if len(dur_buckets) == 0 or len(thr_buckets) == 0:
-        print(f"[WARN] Empty bucket axes for heatmap: {filename}")
-        return
+    def find_bin(value, bins):
+        for i, (low, high) in enumerate(bins):
+            if high is None and value >= low:
+                return i
+            if high is not None and low <= value < high:
+                return i
+        return None
 
-    dur_index = {v: i for i, v in enumerate(dur_buckets)}
-    thr_index = {v: i for i, v in enumerate(thr_buckets)}
+    heatmap = np.zeros((len(y_bins), len(x_bins)))
 
-    heatmap = np.zeros((len(dur_buckets), len(thr_buckets)))
+    for y_val, x_val, count in rows:
+        yi = find_bin(y_val, y_bins)
+        xi = find_bin(x_val, x_bins)
 
-    for d, t, c in rows:
-        heatmap[dur_index[d], thr_index[t]] += c
+        if yi is not None and xi is not None:
+            heatmap[yi, xi] += count
 
-    # If everything is zero, skip log scale
+    print(f"  -> Grid size: {heatmap.shape}")
+
     max_val = heatmap.max()
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(9, 6))
 
-    if max_val <= 0:
-        print(f"[WARN] Heatmap has only zero values: {filename}")
-        im = plt.imshow(
-            heatmap,
-            origin="lower",
-            aspect="auto",
-        )
-    else:
+    if max_val > 0:
         im = plt.imshow(
             heatmap,
             origin="lower",
             aspect="auto",
             norm=colors.LogNorm(vmin=1, vmax=max_val),
         )
+    else:
+        im = plt.imshow(
+            heatmap,
+            origin="lower",
+            aspect="auto",
+        )
 
-    plt.colorbar(im, label="Flow count (log scale)" if max_val > 0 else "Flow count")
+    plt.colorbar(im, label="Flow count (log scale)")
 
-    plt.xlabel("Throughput bucket (bps)")
-    plt.ylabel("Duration bucket (seconds)")
+    plt.xticks(range(len(x_labels)), x_labels, rotation=45)
+    plt.yticks(range(len(y_labels)), y_labels)
+
     plt.title(title)
-
-    if len(thr_buckets) > 1:
-        plt.xticks(range(len(thr_buckets)), [f"{t:,}" for t in thr_buckets], rotation=45)
-    else:
-        plt.xticks([0], [f"{thr_buckets[0]:,}"])
-
-    if len(dur_buckets) > 1:
-        plt.yticks(range(len(dur_buckets)), [f"{d}s" for d in dur_buckets])
-    else:
-        plt.yticks([0], [f"{dur_buckets[0]}s"])
-
     plt.tight_layout()
     plt.savefig(filename)
+    print(f"  -> Wrote {filename}")
     plt.close()
 
 
@@ -193,11 +198,15 @@ def plot_2d_heatmap(rows, title, filename):
 # --------------------------
 if __name__ == "__main__":
 
-    base = Path("hists")
+    stage("Initializing")
+
+    base = Path("hists_3_2")
     out = Path("plots")
     out.mkdir(exist_ok=True)
 
     # ---------- Duration ----------
+    stage("Duration histogram")
+
     duration = load_hist(base / "duration_secs.csv")
     plot_bars(
         bucketize(duration, [
@@ -213,6 +222,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Volume ----------
+    stage("Volume histogram")
+
     volume = load_hist(base / "volume_bytes.csv")
     plot_bars(
         bucketize(volume, [
@@ -228,6 +239,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Packet Count ----------
+    stage("Packet Count histogram")
+
     packets = load_hist(base / "packet_count.csv")
     plot_bars(
         bucketize(packets, [
@@ -243,6 +256,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Throughput (Decode proto index properly) ----------
+    stage("Throughput histograms (TCP/UDP)")
+
     throughput_encoded = load_hist(base / "throughput_bps.csv")
 
     tcp_data = []
@@ -284,6 +299,8 @@ if __name__ == "__main__":
 
 
     # ---------- Direction Dominance ----------
+    stage("Directionality Dominance histograms")
+
     dir_dom = load_hist(base / "directionality_dominance.csv")
 
     tcp_counts = {"Reverse": 0, "Forward": 0}
@@ -306,6 +323,8 @@ if __name__ == "__main__":
               out / "direction_udp.png")
 
     # ---------- Direction Ratio ----------
+    stage("Direction Ratio histograms")
+
     dir_ratio = load_hist(base / "direction_ratio_percent.csv")
 
     tcp_ratio = []
@@ -343,6 +362,7 @@ if __name__ == "__main__":
     )
 
     # ---------- Protocol ----------
+    stage("Protocol distribution histogram")
     protocol = load_hist(base / "protocol.csv")
 
     proto_counts = {}
@@ -356,6 +376,8 @@ if __name__ == "__main__":
             out / "protocol.png")
 
     # ---------- Destination Port Distribution ----------
+    stage("Destination Port Distribution histogram")
+
     dst_ports = load_hist(base / "dst_port.csv")
 
     plot_bars(
@@ -371,6 +393,8 @@ if __name__ == "__main__":
 
 
     # ---------- Pure Direction Protocol ----------
+    stage("Pure Direction Protocol histogram")
+
     pure_proto = load_hist(base / "pure_direction_proto.csv")
 
     pure_map = {
@@ -391,6 +415,8 @@ if __name__ == "__main__":
             out / "pure_direction_proto.png")
 
     # ---------- Pure Direction Duration ----------
+    stage("Pure Direction Duration histogram")
+
     pure_dur = load_hist(base / "pure_direction_duration.csv")
 
     plot_bars(
@@ -406,6 +432,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Pure Direction Destination Port ----------
+    stage("Pure Direction Destination Port histogram")
+
     pure_ports = load_hist(base / "pure_direction_dst_port.csv")
 
     plot_bars(
@@ -420,6 +448,8 @@ if __name__ == "__main__":
     )
 
     # ---------- Large Flow Port Class ----------
+    stage("Large Flow Protocol + Port Class histogram")
+
     large_port = load_hist(base / "large_proto_port_class.csv")
 
     port_class_map = {
@@ -442,6 +472,8 @@ if __name__ == "__main__":
               out / "large_proto_port_class.png")
 
     # ---------- Large Flow L7 ----------
+    stage("Large Flow L7 Protocol histogram")
+
     l7 = load_hist(base / "large_flow_l7_protocol.csv")
 
     l7_counts = {}
@@ -454,36 +486,8 @@ if __name__ == "__main__":
               "Application Protocol",
               out / "large_flow_l7.png")
     
-
-    # ---------- Heatmap ----------
-    plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_2d.csv"),
-        "Flow Duration vs Throughput",
-        out / "duration_vs_throughput_heatmap.png",
-    )
-
-    # ---------- HTTP Heatmap ----------
-    plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_http.csv"),
-        "HTTP Duration vs Throughput",
-        out / "heatmap_http.png",
-    )
-
-    # ---------- TLS Heatmap ----------
-    plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_tls.csv"),
-        "TLS Duration vs Throughput",
-        out / "heatmap_tls.png",
-    )
-
-    # ---------- QUIC Heatmap ----------
-    plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_quic.csv"),
-        "QUIC Duration vs Throughput",
-        out / "heatmap_quic.png",
-    )
-
     # ---------- TLS SNI Buckets ----------
+    stage("TLS SNI Buckets histogram")
     sni_data = load_sni(base / "sni_buckets.csv")
 
     # Take top 15 domains
@@ -495,6 +499,7 @@ if __name__ == "__main__":
             out / "top_sni_domains.png")
     
     # ---------- Long-Lived TLS SNI Buckets ----------
+    stage("Long-Lived TLS SNI Buckets histogram")
     sni_long = load_sni(base / "sni_long_lived.csv")
 
     top_sni_long = dict(
@@ -508,105 +513,328 @@ if __name__ == "__main__":
         out / "top_sni_long_lived.png"
     )
 
+    # ---------- Burstiness Buckets (SCALED: CV * 100) ----------
+    burst_bins = [
+        (0, 20),       # 0–0.2
+        (20, 40),      # 0.2–0.4
+        (40, 60),      # 0.4–0.6
+        (60, 80),      # 0.6–0.8
+        (80, 100),     # 0.8–1.0
+        (100, 200),    # 1.0–2.0
+        (200, 500),    # 2.0–5.0
+        (500, 1000),   # 5.0–10.0
+        (1000, None),  # 10.0+
+    ]
+
+    burst_labels = [
+        "0–0.2",
+        "0.2–0.4",
+        "0.4–0.6",
+        "0.6–0.8",
+        "0.8–1.0",
+        "1–2",
+        "2–5",
+        "5–10",
+        "10+",
+    ]
+
+    throughput_bins = [
+        (0, 100_000),
+        (100_000, 1_000_000),
+        (1_000_000, 10_000_000),
+        (10_000_000, 50_000_000),
+        (50_000_000, 100_000_000),
+        (100_000_000, None),
+    ]
+
+    throughput_labels = [
+        "<100k",
+        "100k–1M",
+        "1–10M",
+        "10–50M",
+        "50–100M",
+        "100M+",
+    ]
+
     # ---------- Burstiness Heatmaps ----------
+    stage("Burstiness vs Throughput heatmaps by Duration")
 
     plot_2d_heatmap(
         load_2d_hist(base / "burst_thr_lt5.csv"),
         "Burstiness vs Throughput (<5s Flows)",
         out / "burst_heatmap_lt5.png",
+        burst_bins,
+        throughput_bins,
+        burst_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "burst_thr_5_10.csv"),
         "Burstiness vs Throughput (5–10s Flows)",
         out / "burst_heatmap_5_10.png",
+        burst_bins,
+        throughput_bins,
+        burst_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "burst_thr_10_30.csv"),
         "Burstiness vs Throughput (10–30s Flows)",
         out / "burst_heatmap_10_30.png",
+        burst_bins,
+        throughput_bins,
+        burst_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "burst_thr_30_60.csv"),
         "Burstiness vs Throughput (30–60s Flows)",
         out / "burst_heatmap_30_60.png",
+        burst_bins,
+        throughput_bins,
+        burst_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "burst_thr_60p.csv"),
         "Burstiness vs Throughput (60s+ Flows)",
         out / "burst_heatmap_60p.png",
+        burst_bins,
+        throughput_bins,
+        burst_labels,
+        throughput_labels
     )
 
     # ---------- Duration vs Port Heatmap ----------
+    duration_bins = [
+        (0, 5),
+        (5, 10),
+        (10, 30),
+        (30, 60),
+        (60, 120),
+        (120, 300),
+        (300, None),
+    ]
+
+    duration_labels = [
+        "<5s", "5–10s", "10–30s",
+        "30–60s", "1–2m", "2–5m", "5m+"
+    ]
+
+    port_bins = [
+        (0, 1024),
+        (1024, 49152),
+        (49152, None),
+    ]
+
+    port_labels = [
+        "Well-Known",
+        "Registered",
+        "Ephemeral",
+    ]
+
+    stage("Duration vs Destination Port heatmap")
+
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_port.csv"),
         "Flow Duration vs Destination Port",
         out / "duration_vs_port_heatmap.png",
+        duration_bins,
+        port_bins,
+        duration_labels,
+        port_labels
     )
 
     # ---------- Port Long vs Short Heatmap ----------
+    long_short_bins = [
+        (0, 1),   # Short
+        (1, None) # Long
+    ]
+
+    long_short_labels = [
+        "Short",
+        "Long"
+    ]
+
+    stage("Port vs Long/Short Flow Classification heatmap")
+
     plot_2d_heatmap(
         load_2d_hist(base / "port_long_vs_short.csv"),
         "Port vs Long/Short Flow Classification",
         out / "port_long_vs_short_heatmap.png",
+        port_bins,
+        long_short_bins,
+        port_labels,
+        long_short_labels
     )
 
-    # ---------- Port-Specific Duration Heatmaps ----------
+    # ---------- Shared Duration / Throughput Buckets ----------
+    duration_bins = [
+        (0, 5),
+        (5, 10),
+        (10, 30),
+        (30, 60),
+        (60, 120),
+        (120, 300),
+        (300, None),
+    ]
+
+    duration_labels = [
+        "<5s", "5–10s", "10–30s",
+        "30–60s", "1–2m", "2–5m", "5m+"
+    ]
+
+    throughput_bins = [
+        (0, 100_000),
+        (100_000, 1_000_000),
+        (1_000_000, 10_000_000),
+        (10_000_000, 50_000_000),
+        (50_000_000, 100_000_000),
+        (100_000_000, None),
+    ]
+
+    throughput_labels = [
+        "<100kbps",
+        "100k–1M",
+        "1–10M",
+        "10–50M",
+        "50–100M",
+        "100M+"
+    ]
+
+    # ---------- Duration vs Throughput (All) ----------
+    stage("Duration vs Throughput heatmap (All Flows)")
     plot_2d_heatmap(
-        load_2d_hist(base / "duration_vs_throughput_443.csv"),
-        "Duration vs Throughput (Port 443)",
-        out / "heatmap_443.png",
+        load_2d_hist(base / "duration_vs_throughput_2d.csv"),
+        "Flow Duration vs Throughput",
+        out / "duration_vs_throughput_heatmap.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
+
+    # ---------- HTTP ----------
+    stage("Duration vs Throughput heatmap (HTTP)")
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_http.csv"),
+        "HTTP Duration vs Throughput",
+        out / "heatmap_http.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
+    )
+
+    # ---------- TLS ----------
+    stage("Duration vs Throughput heatmap (TLS)")
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_tls.csv"),
+        "TLS Duration vs Throughput",
+        out / "heatmap_tls.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
+    )
+
+    # ---------- QUIC ----------
+    stage("Duration vs Throughput heatmap (QUIC)")
+    plot_2d_heatmap(
+        load_2d_hist(base / "duration_vs_throughput_quic.csv"),
+        "QUIC Duration vs Throughput",
+        out / "heatmap_quic.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
+    )
+
+    # ---------- Port-Specific ----------
+    stage("Duration vs Throughput heatmaps by Destination Port")
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_22.csv"),
         "Duration vs Throughput (Port 22)",
         out / "heatmap_22.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_80.csv"),
         "Duration vs Throughput (Port 80)",
         out / "heatmap_80.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_8801_8810.csv"),
         "Duration vs Throughput (Ports 8801–8810)",
         out / "heatmap_8801_8810.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_3478_3481.csv"),
         "Duration vs Throughput (Ports 3478–3481)",
         out / "heatmap_3478_3481.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_19302_19309.csv"),
         "Duration vs Throughput (Ports 19302–19309)",
         out / "heatmap_19302_19309.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_well_known.csv"),
         "Duration vs Throughput (Well-Known Ports)",
         out / "heatmap_well_known.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_registered.csv"),
         "Duration vs Throughput (Registered Ports)",
         out / "heatmap_registered.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
     plot_2d_heatmap(
         load_2d_hist(base / "duration_vs_throughput_ephemeral.csv"),
         "Duration vs Throughput (Ephemeral Ports)",
         out / "heatmap_ephemeral.png",
+        duration_bins,
+        throughput_bins,
+        duration_labels,
+        throughput_labels
     )
 
 

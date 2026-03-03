@@ -68,11 +68,6 @@ static H_PORT_LONG_SHORT: Lazy<Mutex<HashMap<(u16, u8), u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // BURSTINESS HEATMAPS:
-// Change to heatmap of very bursty in first two seconds vs throughput for < 5 second flows
-// Change to heatmap of very bursty vs throughput 5 - 10 second flows
-// Change to heatmap of very bursty vs throughput 10 - 30 second flows
-// Change to heatmap of very bursty vs throughput 30 - 60 second flows
-// Change to heatmap of very bursty vs throughput 60+ second flows
 static H_BURSTY_THR_LT5: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -87,15 +82,6 @@ static H_BURSTY_THR_30_60: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
 
 static H_BURSTY_THR_60P: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
-// ADD DURATION VS THROUGHPUT BUCKETED BY PORTS
-// Add heatmap of duration vs throughput for 443 port
-// Add heatmap of  duration vs throughput 22 port
-// Add heatmap of  duration vs throughput 80 port
-// Add any other heatmaps for commonly used ports?
-// Add heatmap of  duration vs throughput 8801 - 8810 ports
-// Add heatmap of  duration vs throughput  3478 - 3481 ports
-// Add heatmap of  duration vs throughput  19302 - 19309
 
 // DURATION HEATMAPS:
 static H_DUR_THR_2D: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
