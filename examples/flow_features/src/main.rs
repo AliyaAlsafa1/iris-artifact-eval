@@ -12,15 +12,31 @@ use iris_core::protocols::stream::{SessionProto, Session, SessionData};
 use publicsuffix::List;
 use publicsuffix::Psl;
 
-static PSL: Lazy<List> = Lazy::new(List::new);
-
+static PSL: Lazy<List> = Lazy::new(List::new);static START_INSTANT: Lazy<Instant> = Lazy::new(Instant::now);
 // GLOBAL CONSTANTS
 const LARGE_FLOW_MIN_DURATION_SECS: u64 = 20;
 const LARGE_FLOW_MIN_THROUGHPUT_BPS: u64 = 1_000_000; // 1 Mbps
 
 // GLOBAL COUNTERS
+// Byte counts (for overall and long-lived flows)
 static TOTAL_BYTES: Lazy<Mutex<u128>> = Lazy::new(|| Mutex::new(0));
 static LONG_LIVED_BYTES: Lazy<Mutex<u128>> = Lazy::new(|| Mutex::new(0));
+
+// Flow counts (total / long-lived)
+static TOTAL_FLOWS: Lazy<Mutex<u64>> = Lazy::new(|| Mutex::new(0));
+static LONG_LIVED_FLOWS: Lazy<Mutex<u64>> = Lazy::new(|| Mutex::new(0));
+
+// High-throughput long-lived flow totals (bytes + count)
+static HIGH_THR_LONG_LIVED_BYTES: Lazy<Mutex<u128>> = Lazy::new(|| Mutex::new(0));
+static HIGH_THR_LONG_LIVED_FLOWS: Lazy<Mutex<u64>> = Lazy::new(|| Mutex::new(0));
+
+// Port counts for high-duration/high-throughput flows (dst port -> count)
+static PORTS_HIGH_DUR_THROUGHPUT: Lazy<Mutex<HashMap<u16, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// Long-lived flow counts per 2-minute interval (interval index -> count)
+static LONG_LIVED_PER_2MIN: Lazy<Mutex<HashMap<u64, u64>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // GLOBAL HISTOGRAMS
 static H_DURATION: Lazy<Mutex<Histogram<u64>>> =
@@ -67,7 +83,7 @@ static H_DUR_PORT: Lazy<Mutex<HashMap<(u64, u16), u64>>> =
 static H_PORT_LONG_SHORT: Lazy<Mutex<HashMap<(u16, u8), u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-// BURSTINESS HEATMAPS:
+// BURSTINESS HEATMAPS
 static H_BURSTY_THR_LT5: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -83,7 +99,7 @@ static H_BURSTY_THR_30_60: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
 static H_BURSTY_THR_60P: Lazy<Mutex<HashMap<(u64,u64),u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-// DURATION HEATMAPS:
+// DURATION HEATMAPS
 static H_DUR_THR_2D: Lazy<Mutex<HashMap<(u64, u64), u64>>> =
     Lazy::new(|| Mutex::new(HashMap::new())); // general duration vs. throughput heatmap (all flows)
 
@@ -280,9 +296,26 @@ pub fn record_data(conn: &ConnVolume) {
         return;
     }
 
+    // Track flow counts
+    {
+        let mut total = TOTAL_FLOWS.lock().unwrap();
+        *total += 1;
+    }
+
     let duration_secs = (conn.end_ts - conn.start_ts).as_secs().max(1);
     let bytes = conn.byte_count.max(1);
     let packets = conn.packet_count;
+
+    // Count long-lived flows per two-minute interval (based on flow start time)
+    if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS {
+        let elapsed_secs = (conn.start_ts - *START_INSTANT).as_secs();
+        let interval = elapsed_secs / 120;
+        let mut map = LONG_LIVED_PER_2MIN.lock().unwrap();
+        *map.entry(interval).or_insert(0) += 1;
+
+        let mut long = LONG_LIVED_FLOWS.lock().unwrap();
+        *long += 1;
+    }
 
     // Record basic volume and duration metrics
     H_BYTES.lock().unwrap().record(bytes).unwrap();
@@ -305,10 +338,10 @@ pub fn record_data(conn: &ConnVolume) {
     };
 
     // Compute throughput (bps)
-    let throughput = (bytes * 8) / duration_secs;
+    let throughput_bps = (bytes * 8) / duration_secs;
 
     // Bucket throughput (example: round to nearest 100 kbps)
-    let thr_bucket = (throughput / 100_000) * 100_000;
+    let thr_bucket = (throughput_bps / 100_000) * 100_000;
 
     // Bucket burstiness
     let burst_bucket = (burstiness * 100.0) as u64;
@@ -339,8 +372,8 @@ pub fn record_data(conn: &ConnVolume) {
                 *map.entry(bucket.clone()).or_insert(0) += 1;
             }
 
-            // ---- Long-lived flows only ----
-            if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS {
+            // ---- Long-lived, high throughput flows only ----
+            if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS {
                 let mut map = H_SNI_LONG_LIVED.lock().unwrap();
                 *map.entry(bucket).or_insert(0) += 1;
             }
@@ -565,6 +598,7 @@ pub fn record_data(conn: &ConnVolume) {
     if duration_secs >= LARGE_FLOW_MIN_DURATION_SECS
       && throughput_bps >= LARGE_FLOW_MIN_THROUGHPUT_BPS
     {
+
         // --- Transport + Port Class (for LARGE flows only) ---
         // For well known ports track actual port number << NOT IMPLEMENTED
         let port_class_opt = match conn.proto {
@@ -609,11 +643,25 @@ pub fn record_data(conn: &ConnVolume) {
                 _ => 0,
             };
 
-        H_LARGE_FLOW_L7
-            .lock()
-            .unwrap()
-            .record(bucket)
-            .unwrap();
+            H_LARGE_FLOW_L7
+                .lock()
+                .unwrap()
+                .record(bucket)
+                .unwrap();
+        }
+
+        // Track counts and bytes for high-throughput long-lived flows
+        {
+            let mut flows = HIGH_THR_LONG_LIVED_FLOWS.lock().unwrap();
+            *flows += 1;
+        }
+        {
+            let mut bytes_total = HIGH_THR_LONG_LIVED_BYTES.lock().unwrap();
+            *bytes_total += bytes as u128;
+        }
+        {
+            let mut map = PORTS_HIGH_DUR_THROUGHPUT.lock().unwrap();
+            *map.entry(conn.dst_port).or_insert(0) += 1;
         }
     }
 
@@ -863,12 +911,103 @@ fn main() {
     // Finished
     println!("Histograms written to {}", out_dir.display());
 
-    // Print percentage of bytes in long-lived flows
-    let total = *TOTAL_BYTES.lock().unwrap();
-    let long = *LONG_LIVED_BYTES.lock().unwrap();
+    // Summary metrics
+    let total_bytes = *TOTAL_BYTES.lock().unwrap();
+    let long_bytes = *LONG_LIVED_BYTES.lock().unwrap();
+    let total_flows = *TOTAL_FLOWS.lock().unwrap();
+    let long_flows = *LONG_LIVED_FLOWS.lock().unwrap();
+    let high_thr_flows = *HIGH_THR_LONG_LIVED_FLOWS.lock().unwrap();
+    let high_thr_bytes = *HIGH_THR_LONG_LIVED_BYTES.lock().unwrap();
 
-    if total > 0 {
-        let percent = (long as f64 / total as f64) * 100.0;
-        println!("Long-lived flows account for {:.2}% of total bytes", percent);
+    let mut summary_lines: Vec<String> = Vec::new();
+    summary_lines.push(format!("Total flows: {}", total_flows));
+
+    if total_flows > 0 {
+        summary_lines.push(format!(
+            "Long-lived flows account for {:.2}% of total flows ({}/{})",
+            long_flows as f64 / total_flows as f64 * 100.0,
+            long_flows,
+            total_flows,
+        ));
+    } else {
+        summary_lines.push("Long-lived flows account for 0.00% of total flows (0/0)".to_string());
     }
+
+    if total_bytes > 0 {
+        summary_lines.push(format!(
+            "Long-lived flows account for {:.2}% of total bytes ({}/{})",
+            long_bytes as f64 / total_bytes as f64 * 100.0,
+            long_bytes,
+            total_bytes,
+        ));
+
+        summary_lines.push(format!(
+            "Long-lived high-throughput flows account for {:.2}% of total bytes ({}/{})",
+            high_thr_bytes as f64 / total_bytes as f64 * 100.0,
+            high_thr_bytes,
+            total_bytes,
+        ));
+    } else {
+        summary_lines.push("Long-lived flows account for 0.00% of total bytes (0/0)".to_string());
+        summary_lines.push("Long-lived high-throughput flows account for 0.00% of total bytes (0/0)".to_string());
+    }
+
+    if total_flows > 0 {
+        summary_lines.push(format!(
+            "Long-lived high-throughput flows account for {:.2}% of total flows ({}/{})",
+            high_thr_flows as f64 / total_flows as f64 * 100.0,
+            high_thr_flows,
+            total_flows,
+        ));
+    } else {
+        summary_lines.push("Long-lived high-throughput flows account for 0.00% of total flows (0/0)".to_string());
+    }
+
+    summary_lines.push("Top 10 ports for high-duration/high-throughput flows:".to_string());
+    {
+        let map = PORTS_HIGH_DUR_THROUGHPUT.lock().unwrap();
+        let mut ports: Vec<(u16, u64)> = map.iter().map(|(&port, &count)| (port, count)).collect();
+
+        ports.sort_unstable_by_key(|&(_, count)| std::cmp::Reverse(count));
+
+        if ports.is_empty() {
+            summary_lines.push("  (none)".to_string());
+        } else {
+            for (port, count) in ports.into_iter().take(10) {
+                summary_lines.push(format!("  {}: {}", port, count));
+            }
+        }
+    }
+
+    summary_lines.push("Long-lived flows per 2-minute interval:".to_string());
+    {
+        let map = LONG_LIVED_PER_2MIN.lock().unwrap();
+        let mut intervals: Vec<(u64, u64)> = map.iter().map(|(&i, &c)| (i, c)).collect();
+
+        intervals.sort_unstable_by_key(|&(i, _)| i);
+
+        if intervals.is_empty() {
+            summary_lines.push("  (none)".to_string());
+        } else {
+            for (interval, count) in intervals {
+                let start = interval * 120;
+                let end = start + 119;
+                summary_lines.push(format!("  {}-{}s: {}", start, end, count));
+            }
+        }
+    }
+
+    for line in &summary_lines {
+        println!("{}", line);
+    }
+
+    let summary_path = out_dir.join("summary.txt");
+    {
+        let mut f = BufWriter::new(File::create(&summary_path).unwrap());
+        for line in &summary_lines {
+            writeln!(f, "{}", line).unwrap();
+        }
+    }
+
+    println!("Summary written to {}", summary_path.display());
 }

@@ -508,7 +508,7 @@ if __name__ == "__main__":
 
     plot_bars(
         top_sni_long,
-        "Top 15 TLS Root Domains (Long-Lived Flows)",
+        "Top 15 TLS Root Domains (Long-Lived / High Throughput Flows)",
         "Domain",
         out / "top_sni_long_lived.png"
     )
